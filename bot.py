@@ -34,7 +34,7 @@ import atexit
 import psutil
 import signal
 
-VERSION = "2.1.5"
+VERSION = "2.1.6"
 ACTIVE_BOTS = 4
 
 
@@ -63,7 +63,7 @@ AUTOSWITCH_START_DELAY = None
 PV_DEVNULL_INTERVAL = 3
 PV_PIPE_INTERVAL = 7
 VOTE_TIMER = None
-DEBUG = 0 # "chat,stdout,logfile"
+DEBUG = [] # "chat,stdout,logfile"
 TEST = False
 
 manager = Manager()
@@ -1447,11 +1447,8 @@ def on_isbjon(args):
 
 def isbjon(afreeca_id, quiet=False):
     try:
-        r = requests.get( "http://afbbs.afreeca.com:8080/api/video/get_bj_liveinfo.php"
-                        , params=dict(szBjId=afreeca_id)
-                        )
-        xml_tree = etree.parse( "http://afbbs.afreeca.com:8080/api/video/get_bj_liveinfo.php?szBjId=" + \
-                                afreeca_id )
+        xml_tree = etree.parse("http://afbbs.afreeca.com:8080/api/video/get_bj_liveinfo.php?szBjId=" + \
+                               afreeca_id)
         
         result = xml_tree.find("result").text
     except Exception as x:
@@ -1477,13 +1474,13 @@ def on_commercial(args):
     else:
         length = 30
     
-    if (datetime.now() - commercial.lastruntime[0]).seconds > 8*60:
+    if (datetime.now() - commercial.lastruntime[0]).seconds > 10*60:
         start_multiprocess(commercial, args=(length,))
     else:
         conn.msg("error, interval between commercials is less than 8 minutes")
 
 def commercial(length):
-    if (datetime.now() - commercial.lastruntime[0]).seconds <= 8*60:
+    if (datetime.now() - commercial.lastruntime[0]).seconds <= 10*60:
         return
     
     print("requesting %ds commercial" % length)
