@@ -1,0 +1,8 @@
+*.ts
+*.flv
+*.mkv
+/modlist.json
+/dummy_videos
+/check_code
+/settings.json
+/settings-temp_snips.json

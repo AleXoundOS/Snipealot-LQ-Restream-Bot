@@ -1,0 +1,7 @@
+#!/bin/sh
+
+cd /home/twitch_bw_bot/*bot*
+while true; do
+    python bot.py $1
+    sleep 7
+done

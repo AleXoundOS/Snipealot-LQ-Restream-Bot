@@ -45,7 +45,7 @@ debug_addon.logfiledescriptor = None
 
 def get_events():
     def get_events_from_page(month="this"):
-        # assuming that teamliquid uses KST timezone
+        # assuming that teamliquid uses KST timezone (now GST for my cookie)
         if month == "this":
             #url = "http://www.teamliquid.net/calendar/%d/%02d/?tourney=17" % (tl_dt_now.year, tl_dt_now.month)
             url = "www.teamliquid.net/calendar/%d/%02d/?tourney=17" % (tl_dt_now.year, tl_dt_now.month)
@@ -57,8 +57,8 @@ def get_events():
         else:
             raise Exception
         
-        #cookies = { "SID": "1cb594dd87fc81cf51271f273170a89f", "sb": "pfp75ehBUh" }
-        cookies = { "SID": "3e5e77007348ef42813bfd7d48d12e6a", "sb": "R4r7I9mVeY" }
+        # SID changes every 2 weeks or so
+        cookies = { "SID": "e6a9767156c8a1ca29d7c92599bca50c", "sb": "R4r7I9mVeY" }
         r = requests.get("http://" + url, cookies=cookies)
         myhtml = etree.HTML(r.text)
         
@@ -81,7 +81,7 @@ def get_events():
                                     title = element.text.strip()
                                     #print("title = " + title)
                                 elif element.tag == "strong" and "Event Time:" in element.text:
-                                    recognized_time = datetime.strptime(element.text, "Event Time: %H:%M KST ")
+                                    recognized_time = datetime.strptime(element.text, "Event Time: %H:%M GST")
                                     #print("recognized_time = %s" % recognized_time)
                                     event_dt = tl_dt_now.replace( day=day, hour=recognized_time.hour
                                                                 , minute=recognized_time.minute, month = event_month
@@ -94,7 +94,8 @@ def get_events():
                                     break
         return events
 
-    tl_dt_now = datetime.utcnow().replace(tzinfo=timezone("UTC"), second=0, microsecond=0).astimezone(timezone("Asia/Seoul"))
+    #tl_dt_now = datetime.utcnow().replace(tzinfo=timezone("UTC"), second=0, microsecond=0).astimezone(timezone("Asia/Seoul"))
+    tl_dt_now = datetime.utcnow().replace(tzinfo=timezone("UTC"), second=0, microsecond=0).astimezone(timezone("Europe/Moscow"))
     events = get_events_from_page(month="this")
     if (tl_dt_now + timedelta(days=DAYS_AHEAD)).month > tl_dt_now.month:
         events += get_events_from_page(month="next")

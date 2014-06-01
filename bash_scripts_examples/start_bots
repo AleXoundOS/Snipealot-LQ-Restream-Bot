@@ -1,0 +1,15 @@
+#!/bin/sh
+
+tmux new-session -d -s tmux_session -n tmux_session
+tmux new-window -t tmux_session:1 -n channel1
+tmux new-window -t tmux_session:2 -n channel2
+tmux new-window -t tmux_session:3 -n channel3
+tmux new-window -t tmux_session:4 -n channel4
+
+tmux send-keys -t tmux_session:0 C-d
+tmux send-keys -t tmux_session:1 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 1' C-m
+tmux send-keys -t tmux_session:2 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 2' C-m
+tmux send-keys -t tmux_session:3 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 3' C-m
+tmux send-keys -t tmux_session:4 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 4' C-m
+
+#tmux join-pane -s 2.0 -t 0
