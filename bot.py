@@ -389,7 +389,7 @@ class IRCClass(SimpleIRCClient):
         message = event.arguments[0]
         
         # receiving onstream response from other bots
-        if "twitch.tv/snipealot" in message and event.source.nick.replace('#', '') in \
+        if "twitch.tv/" in message and event.source.nick.replace('#', '') in \
         [iter_stream["nickname"] for iter_stream in STREAM[1:ACTIVE_BOTS+1]]:
             onstream_responses[int(event.source.nick[-1])] = True
         
@@ -488,7 +488,7 @@ def on_onstream(request_channel):
             onstream_value = "switching to " + status["player"]
     
     conn.connection.privmsg( request_channel
-                           , "twitch.tv/snipealot%d   %s" % (_stream_id, onstream_value)
+                           , "twitch.tv/%s%d   %s" % (request_channel[1:-1], _stream_id, onstream_value)
                            )
 
 
@@ -573,7 +573,7 @@ def voting(vote_set=None):
     
     counter = VOTE_TIMER
     report_interval = 20
-    conn.msg("vote started, %d seconds remaining" % counter)
+    conn.msg("vote started, %d seconds remaining, type the desired nickname" % counter)
     time.sleep(report_interval)
     while counter >= 0 and toggles["voting__on"]:
         counter -= report_interval
