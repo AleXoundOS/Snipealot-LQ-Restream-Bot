@@ -34,7 +34,7 @@ import atexit
 import psutil
 import signal
 
-VERSION = "2.1.6"
+VERSION = "2.1.7"
 ACTIVE_BOTS = 4
 
 
@@ -458,12 +458,19 @@ class IRCClass(SimpleIRCClient):
     
     
     def msg(self, message):
-        for line in message.split('\n'):
-            if self.connection.is_connected():
-                self.connection.privmsg(self.channel, line)
+        if self.connection.is_connected():
+            message_list = message.split('\n')
+            lines_count = len(message_list)
+            if lines_count > 1:
+                for line in message_list:
+                    self.connection.privmsg(self.channel, line)
+                    lines_count -= 1
+                    if lines_count > 0:
+                        time.sleep(1)
             else:
-                print("not connected, redirected message here: " + message)
-
+                self.connection.privmsg(self.channel, message)
+        else:
+            print("not connected, redirected message to stdout: " + message)
 
 def on_onstream(request_channel):
     for i in range(len(onstream_responses)):
@@ -481,7 +488,7 @@ def on_onstream(request_channel):
                 time.sleep(0.1)
     
     onstream_value = status["player"]
-    if status["player"] != "<idle>" and not pid_alive(pids["pv_to_pipe"]):
+    if status["player"] != "[idle]" and not pid_alive(pids["pv_to_pipe"]):
         if RETRY_COUNT - toggles["livestreamer__on"] > 1:
             onstream_value = "reconnecting to " + status["player"]
         else:
@@ -529,7 +536,7 @@ def on_vote(args):
             # was aborted or already running
             return
         elif voted_player == None:
-            if status["player"] == "<idle>":
+            if status["player"] == "[idle]":
                 conn.msg("no votes received and stream is idle, picking random streamer")
                 on_setplayer([random.choice(list(vote_set))])
             else:
@@ -744,8 +751,8 @@ def stream_supervisor():
         else:
             #conn.msg("antispam returns false, antispam.blocktime = %s" % str(antispam.blocktime))
             return False
-    antispam.blocktime = datetime.fromtimestamp(0)
     antispam.lastmsglist = []
+    antispam.blocktime = datetime.fromtimestamp(0)
     
     def dummy_video_supervisor():
         def start_dummy_video():
@@ -1043,7 +1050,7 @@ def startplayer(afreeca_id, player):
                 debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
         
         
-        status["player"] = "<idle>"
+        status["player"] = "[idle]"
         status["afreeca_id"] = None
         
         status["prev_player"] = player
@@ -1052,7 +1059,7 @@ def startplayer(afreeca_id, player):
         on_title(["--quiet", "temporary snipealot%d" % _stream_id])
         
         # on_tldef
-        tldef__mprocess = Process(target=on_tldef, args=(["<idle>",  "--quiet"],))
+        tldef__mprocess = Process(target=on_tldef, args=(["[idle]",  "--quiet"],))
         tldef__mprocess.start()
         mpids["tldef"] = tldef__mprocess.pid
         
@@ -1287,7 +1294,7 @@ def on_refresh(args):
         conn.msg("error, this command doesn't accept any arguments")
         return
     
-    if status["player"] != "<idle>" and status["afreeca_id"] is not None:
+    if status["player"] != "[idle]" and status["afreeca_id"] is not None:
         on_setmanual([status["afreeca_id"], status["player"]])
     elif status["prev_player"] is not None and status["prev_afreeca_id"] is not None:
         on_setmanual([status["prev_afreeca_id"], status["prev_player"]])
@@ -1903,8 +1910,8 @@ def main():
     toggles = manager.dict({ "stream_supervisor__on": True, "dummy_video_loop__on": False, "pv_to": None
                            , "streaming__enabled": True, "livestreamer__on": False, "voting__on": False
                            })
-    status = manager.dict({ "player": "<idle>", "afreeca_id": None
-                          , "prev_player": "<idle>", "prev_afreeca_id": None 
+    status = manager.dict({ "player": "[idle]", "afreeca_id": None
+                          , "prev_player": "[idle]", "prev_afreeca_id": None 
                           })
     onstream_responses = manager.list([ False, False, False, False, False, False ])
     voted_users = manager.list([])
