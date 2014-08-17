@@ -218,7 +218,7 @@ def spawn_and_wait(expire_secs):
 
 def pid_alive(pid):
     try:
-        if pid is not None and psutil.pid_exists(pid) and psutil.Process(pid).status != psutil.STATUS_ZOMBIE:
+        if pid is not None and psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
             return True
         else:
             return False
@@ -466,7 +466,8 @@ class IRCClass(SimpleIRCClient):
                     self.connection.privmsg(self.channel, line)
                     lines_count -= 1
                     if lines_count > 0:
-                        time.sleep(1)
+                        print("sleeping for 2 seconds after new line in a message")
+                        time.sleep(2)
             else:
                 self.connection.privmsg(self.channel, message)
         else:
@@ -1975,6 +1976,7 @@ def stop_processes():
         if pid_alive(mpid):
             print("multiprocess [%s] is still alive" % mpid_name)
     
+    print("trying to kill child processes")
     kill_child_processes(os.getpid(), 9)
     
     if debug_send.logfiledescriptor is not None:
