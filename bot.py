@@ -39,7 +39,7 @@ ACTIVE_BOTS = 4
 
 
 TWITCH_POLL_INTERVAL = 14*60 # seconds
-ONLINE_LIST_INTERVAL = 3 # minutes
+ONLINE_LIST_INTERVAL = 1 # minutes
 SUPERVISOR_INTERVAL = 3 # seconds
 
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
@@ -219,6 +219,7 @@ def spawn_and_wait(expire_secs):
 def pid_alive(pid):
     try:
         if pid is not None and psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+            #print("pid " + str(pid) + " exists!!!!!!!!!!!!!!!!!!, zombie status = " + str(psutil.Process(pid).status() == psutil.STATUS_ZOMBIE))
             return True
         else:
             return False
@@ -1482,13 +1483,13 @@ def on_commercial(args):
     else:
         length = 30
     
-    if (datetime.now() - commercial.lastruntime[0]).seconds > 10*60:
+    if (datetime.now() - commercial.lastruntime[0]).seconds > 12*60:
         start_multiprocess(commercial, args=(length,))
     else:
-        conn.msg("error, interval between commercials is less than 8 minutes")
+        conn.msg("error, interval between commercials is less than 12 minutes")
 
 def commercial(length):
-    if (datetime.now() - commercial.lastruntime[0]).seconds <= 10*60:
+    if (datetime.now() - commercial.lastruntime[0]).seconds <= 12*60:
         return
     
     print("requesting %ds commercial" % length)
@@ -1507,10 +1508,10 @@ def commercial(length):
     
     if r.status_code == 204:
         print("--) successful commercial request")
-        commercial.lastruntime[0] = datetime.now()
     else:
         conn.msg("unsuccessful response from twitch after sending commercial request: " + \
                  str(r.text.replace('\n', '\\n ')))
+    commercial.lastruntime[0] = datetime.now()
 commercial.lastruntime = manager.list([datetime.now()])
 
 
