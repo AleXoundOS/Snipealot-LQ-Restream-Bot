@@ -1,12 +1,12 @@
 #!/bin/sh
 
-tmux new-session -d -s bot_session -n bot_window
+tmux new-session -d -s bot_session1 -n bot_window
 tmux split-window
 tmux split-window
 tmux split-window
 tmux select-layout tiled
 
-tmux send-keys -t bot_session:bot_window.0 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 1' C-m
-tmux send-keys -t bot_session:bot_window.1 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 2' C-m
-tmux send-keys -t bot_session:bot_window.2 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 3' C-m
-tmux send-keys -t bot_session:bot_window.3 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 4' C-m
+tmux send-keys -t bot_session1:bot_window.0 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 1' C-m
+tmux send-keys -t bot_session1:bot_window.1 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 2' C-m
+tmux send-keys -t bot_session1:bot_window.2 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 3' C-m
+tmux send-keys -t bot_session1:bot_window.3 'sudo -u twitch_bw_bot /home/twitch_bw_bot/start_bot 4' C-m
