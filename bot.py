@@ -34,7 +34,7 @@ import atexit
 import psutil
 import signal
 
-VERSION = "2.1.7"
+VERSION = "2.1.10"
 ACTIVE_BOTS = 4
 
 
@@ -496,8 +496,11 @@ def on_onstream(request_channel):
         else:
             onstream_value = "switching to " + status["player"]
     
+    #conn.connection.privmsg( request_channel
+    #                       , "twitch.tv/%s%d   %s" % (request_channel[1:-1], _stream_id, onstream_value)
+    #                       )
     conn.connection.privmsg( request_channel
-                           , "twitch.tv/%s%d   %s" % (request_channel[1:-1], _stream_id, onstream_value)
+                           , "twitch.tv/%-10s   %s" % (STREAM[_stream_id]["channel"][1:], onstream_value)
                            )
 
 
@@ -567,7 +570,7 @@ def voting(vote_set=None):
         elif len(online_set) < 2:
             conn.msg("less than 2 streamers available for voting, aborting")
             return -1
-        vote_set = online_set
+        vote_set = online_set - forbidden_players
     
     vote_set = frozenset([p.lower() for p in vote_set])
     
@@ -706,7 +709,9 @@ def stream_supervisor():
             global dummy_videos
             if len(dummy_videos) == 0:
                 dummy_videos = [ f for f in os.listdir("dummy_videos/") \
-                                 if f[-3:] == ".ts" and os.path.isfile("dummy_videos/"+f) ]
+                                 if os.path.isfile("dummy_videos/"+f) ]
+                                 #if f[-3:] == ".ts" and os.path.isfile("dummy_videos/"+f) ]
+                                 
                 
             
             
@@ -728,7 +733,8 @@ def stream_supervisor():
                 toggles["dummy_video_loop__on"] = False
                 return
             
-            dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
+            #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
+            dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" -c copy -loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
             dummy_video_loop__process = Popen(dummy_video_loop__cmd, preexec_fn=os.setsid, shell=True)
             pids["dummy_video_loop"] = dummy_video_loop__process.pid
             dummy_video_loop__process.wait()
@@ -920,7 +926,8 @@ def on_startstream(args):
         
         # starting ffmpeg to stream from pipe
         ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
-        ffmpeg__cmd += [ "-vcodec", "copy", "-acodec", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
+        #ffmpeg__cmd += [ "-vcodec", "copy", "-acodec", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
+        ffmpeg__cmd += [ "-c:v", "copy", "-c:a", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
         ffmpeg__cmd += [ "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
         # Popen(, cwd="folder")
         print("\n%s\n" % ' '.join(ffmpeg__cmd))
@@ -1027,7 +1034,8 @@ def startplayer(afreeca_id, player):
                 return
             
             livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS)
-            livestreamer__cmd += " afreeca.com/%s best -O > %s" % (afreeca_id, _stream_pipel)
+            #livestreamer__cmd += " afreeca.com/%s best -O > %s" % (afreeca_id, _stream_pipel)
+            livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - -c copy -loglevel error -bsf:v h264_mp4toannexb -f mpegts %s" % (afreeca_id, _stream_pipel)
             print("\n%s\n" % livestreamer__cmd)
             livestreamer__process = Popen(livestreamer__cmd, preexec_fn=os.setsid, shell=True)
             pids["livestreamer"] = livestreamer__process.pid
@@ -1070,7 +1078,7 @@ def startplayer(afreeca_id, player):
         start_multiprocess(commercial, args=(30,))
         
         if livestreamer__exit_code == 1:
-            conn.msg("the afreeca stream appears to be offline or inaccessible")
+            conn.msg("afreeca stream appears to be offline, inaccessible or has incompatible stream container")
         elif livestreamer__exit_code == -15:
             conn.msg("afreeca stream playback ended")
         else:
@@ -1326,16 +1334,17 @@ def on_tldef(args):
                                              }
                                  , data = data
                                  )
+                if r.status_code == 200:
+                    if "--quiet" not in args:
+                        conn.msg("successfully updated player nickname & race at teamliquid.net")
+                    break
+                elif counter == 0:
+                    conn.msg( "warning, couldn't update player nickname & race at teamliquid.net, "
+                              "got %d response" % r.status_code )
             except Exception as x:
                 debug_send( "warning, exception occured while updating player nickname & race at "
                             "teamliquid.net: " + str(x) )
-            if r.status_code == 200:
-                if "--quiet" not in args:
-                    conn.msg("successfully updated player nickname & race at teamliquid.net")
-                break
-            elif counter == 0:
-                conn.msg( "warning, couldn't update player nickname & race at teamliquid.net, "
-                          "got %d response" % r.status_code )
+            
                         
         
         # defiler.ru
@@ -1503,14 +1512,15 @@ def commercial(length):
                          , headers = headers
                          , data = { "length": length }
                          )
+        if r.status_code == 204:
+            print("--) successful commercial request")
+        else:
+            conn.msg("unsuccessful response from twitch after sending commercial request: " + \
+                      str(r.text.replace('\n', '\\n ')))
     except Exception as x:
         debug_send("warning, exception occured while sending twitch api request for commerial: " + str(x))
     
-    if r.status_code == 204:
-        print("--) successful commercial request")
-    else:
-        conn.msg("unsuccessful response from twitch after sending commercial request: " + \
-                 str(r.text.replace('\n', '\\n ')))
+    
     commercial.lastruntime[0] = datetime.now()
 commercial.lastruntime = manager.list([datetime.now()])
 
