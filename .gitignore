@@ -6,3 +6,5 @@
 /check_code
 /settings.json
 /settings-temp_snips.json
+__pycache__
+test_data

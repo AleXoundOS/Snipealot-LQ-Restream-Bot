@@ -34,13 +34,19 @@ import atexit
 import psutil
 import signal
 
-VERSION = "2.1.10"
+from modules import afreeca_api
+from modules.afreeca_api import isbjon, get_online_BJs
+online_fetch = get_online_BJs
+
+
+VERSION = "2.1.19"
 ACTIVE_BOTS = 4
 
 
 TWITCH_POLL_INTERVAL = 14*60 # seconds
 ONLINE_LIST_INTERVAL = 1 # minutes
 SUPERVISOR_INTERVAL = 3 # seconds
+NON_ZERO_READS_COUNT_NEEDED = 3
 
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
 TWITCH_V3_HEADER = { "Accept": "application/vnd.twitchtv.v3+json" }
@@ -530,7 +536,7 @@ def on_vote(args):
     else:
         vote_set = frozenset([p.lower() for p in args])
         if not vote_set.issubset([iter_dict[NICKNAME_].lower() for iter_dict in afreeca_database.values()]) or \
-        vote_set.intersection(forbidden_players):
+        vote_set.intersection([player.lower() for player in forbidden_players]):
             conn.msg("error, one of the specified players does not exist in database or forbidden")
             return True
     
@@ -553,7 +559,15 @@ def on_vote(args):
     start_multiprocess(on_voting)
 
 
+#def voting_decorator(voting_func):
+    #def inner(vote_set):
+        #on_title(["--quiet", "voting in progress, type desired nickname"])
+        #ret = voting_func(vote_set)
+        #on_title(["--quiet", get_statuses()[_stream_id])
+        #return ret
+    #return inner
 
+#@voting_decorator
 def voting(vote_set=None):
     if toggles["voting__on"]:
         conn.msg("error, another voting process is already running")
@@ -562,7 +576,7 @@ def voting(vote_set=None):
     toggles["voting__on"] = True
     
     if vote_set is None:
-        online_set = online_fetch()
+        online_set = frozenset(bj["nickname"] for bj in online_fetch(afreeca_database))
         if online_set == -1:
             # i.e. couldn't get online list
             conn.msg("couldn't start vote for all online players")
@@ -585,11 +599,11 @@ def voting(vote_set=None):
     
     counter = VOTE_TIMER
     report_interval = 20
-    conn.msg("vote started, %d seconds remaining, type the desired nickname" % counter)
+    conn.msg("voting started, %d seconds remaining, type the desired nickname" % counter)
     time.sleep(report_interval)
     while counter >= 0 and toggles["voting__on"]:
         counter -= report_interval
-        conn.msg("vote in progress, %d seconds remaining, (%s)" % \
+        conn.msg("voting in progress, %d seconds remaining, (%s)" % \
          (counter, ', '.join(["%s: %d" % (k2,v2) for k2,v2 in votes.items() \
          if (vote_set is None or k2 in vote_set) and v2 > 0])))
         if counter >= report_interval:
@@ -614,7 +628,7 @@ def voting(vote_set=None):
     
     max_votes = max(these_votes.values())
     if max_votes > 0:
-        conn.msg("vote ended, "+', '.join(["%s: %d" % (k2,v2) for k2,v2 in these_votes.items() if v2 > 0]))
+        conn.msg("voting ended, "+', '.join(["%s: %d" % (k2,v2) for k2,v2 in these_votes.items() if v2 > 0]))
         winners = [k for k, v in these_votes.items() if v == max_votes]
         if len(winners) == 1:
             clear_votes()
@@ -624,7 +638,7 @@ def voting(vote_set=None):
             clear_votes()
             return random.choice(winners)
     else:
-        conn.msg("vote ended")
+        conn.msg("voting ended")
         clear_votes()
         return None
 
@@ -648,17 +662,31 @@ def stream_supervisor():
             onstream_set = frozenset([iter2_status["status"]["player"] for iter2_status in statuses])
             
             # getting online_set
-            online_set = online_fetch(quiet=True)
+            online_BJs = online_fetch(afreeca_database, quiet=True)
             
-            if online_set == -1 or len(online_set) == 0:
+            if online_BJs == -1 or len(online_BJs) == 0:
                 # means that couldn't fetch the online list
+                conn.msg( "afreeca online returns no streamers online (seems to be down), aborting autoswitch,"
+                          " deferring autoswitch for 8 minutes" )
+                autoswitch.waitcounter = 8*60
                 return
-            else:
                 
-                if (len(online_set) > 0 and len(online_set - onstream_set - forbidden_players) == 0):
-                    choice_set = online_set
+            else:
+                choice_dicts = []
+                
+                # if all online BJs are already being restreamed at the moment
+                if (len(online_BJs) > 0 and len( frozenset(bj["nickname"] for bj in online_BJs) -
+                                                 onstream_set - forbidden_players ) == 0):
+                    pass
                 else:
-                    choice_set = online_set - onstream_set - forbidden_players
+                    print("[dbg] onstream_set = %s" % str(onstream_set))
+                    print("[dbg] choice_dicts = %s" % ", ".join([bj["nickname"] for bj in online_BJs]))
+                    for bj in online_BJs:
+                        print("[dbg] checking player {%s}" % bj["nickname"])
+                        if (bj["nickname"] not in onstream_set) and (bj["nickname"] not in forbidden_players):
+                            choice_dicts.append(bj)
+                    #choice_set = online_set - onstream_set - forbidden_players
+                    
                 # doubful code... #############
                 #if not pid_alive(mpids["ffmpeg"]) and toggles["streaming__enabled"]:
                     #conn.msg("online streamers are available, supervisor starts streaming to twitch...")
@@ -669,22 +697,24 @@ def stream_supervisor():
                         #counter -= 1
                         #time.sleep(1)
                 ####################
-                if len(choice_set) == 1:
+                if len(choice_dicts) == 1:
                     conn.msg("stream was idle for more than %d seconds, switching to %s" % \
-                     (AUTOSWITCH_START_DELAY, list(choice_set)[0]))
-                    on_setplayer([list(choice_set)[0]])
+                     (AUTOSWITCH_START_DELAY, choice_dicts[0]["nickname"]))
+                    on_setplayer([choice_dicts[0]["nickname"]])
                 else:
                     conn.msg( "stream was idle for more than %d seconds, autoswitch started, "
-                              "select from the following players:\n%s" % \
-                              (AUTOSWITCH_START_DELAY, ", ".join(choice_set)) )
-                    voted_player = voting(choice_set)
+                              "select from the following players:\n" % AUTOSWITCH_START_DELAY )
+                    afreeca_api.print_online_list(choice_dicts, message="")
+                    voted_player = voting(frozenset(bj["nickname"] for bj in choice_dicts))
                     if voted_player == -1:
                         return
                     elif voted_player != None:
                         on_setplayer([voted_player])
                     else:
-                        conn.msg("no votes received, picking random streamer")
-                        on_setplayer([random.choice(list(choice_set))])
+                        #conn.msg("no votes received, picking random streamer")
+                        conn.msg( "no votes received, randomly picking one of the two BJs " +
+                                  "with highest afreeca rank available online" )
+                        on_setplayer([random.choice([bj["nickname"] for bj in choice_dicts][:2])])
     
     autoswitch.waitcounter = AUTOSWITCH_START_DELAY
     
@@ -776,46 +806,55 @@ def stream_supervisor():
                 # turn on dummy video
                 start_dummy_video()
         elif pid_alive(pids["livestreamer"]):
+            several_non_zero_reads = 0
             try:
-                hF = open(_stream_rate_file, 'r')
-            except Exception as x:
-                debug_send("cannot open input rate file: " + str(x))
-                return
-            
-            try:
-                for char in hF.read(3):
-                    if char.isdigit():
-                        if char == '0':
-                            pv_to_devnull()
-                            #if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]) and \
-                            #not toggles["dummy_video_loop__on"]:
-                            if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]):
-                                # turn on dummy video
-                                if antispam():
-                                    conn.msg("(afreeca is not responding, starting dummy video)")
-                                
-                                start_multiprocess(commercial, args=(30,))
-                                start_dummy_video()
-                        else:
-                            # very important part!!!!
-                            if toggles["dummy_video_loop__on"]:
-                                if pid_alive(pids["dummy_video_loop"]):
-                                    # turn off dummy video
-                                    toggles["dummy_video_loop__on"] = False
-                                    if antispam(just_check=True):
-                                        conn.msg("(afreeca started sending stream data, stopping dummy video)")
-                                    if terminate_pid_p("dummy_video_loop"):
-                                        #time.sleep(0.1)
-                                        pv_to_pipe()
-                            else:
-                                pv_to_pipe()
+                while several_non_zero_reads < NON_ZERO_READS_COUNT_NEEDED:
+                    try:
+                        hF = open(_stream_rate_file, 'r')
+                    except Exception as x:
+                        debug_send("cannot open input rate file: " + str(x))
+                        return
+                    
+                    for char in hF.read(3):
+                        if char.isdigit():
+                            break
+                    if char != '0':
+                        several_non_zero_reads += 1
+                    else:
                         break
+                    
+                    hF.close()
+                    time.sleep(PV_DEVNULL_INTERVAL)
             except Exception as x:
                 debug_send("exception occurred while reading input rate file: [%d] %s" % (sys.exc_info()[-1].tb_lineno, str(x)))
                 toggles["dummy_video_loop__on"] = False
                 if pid_alive(pids["livestreamer"]):
                     pv_to_devnull()
-            hF.close()
+            
+            if several_non_zero_reads < NON_ZERO_READS_COUNT_NEEDED:
+                pv_to_devnull()
+                #if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]) and \
+                #not toggles["dummy_video_loop__on"]:
+                if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]):
+                    # turn on dummy video
+                    if antispam():
+                        conn.msg("(afreeca is not responding, starting dummy video)")
+                    
+                    start_multiprocess(commercial, args=(30,))
+                    start_dummy_video()
+            else:
+                # very important part!!!!
+                if toggles["dummy_video_loop__on"]:
+                    if pid_alive(pids["dummy_video_loop"]):
+                        # turn off dummy video
+                        toggles["dummy_video_loop__on"] = False
+                        if antispam(just_check=True):
+                            conn.msg("(afreeca started sending stream data, stopping dummy video)")
+                        if terminate_pid_p("dummy_video_loop"):
+                            #time.sleep(0.1)
+                            pv_to_pipe()
+                else:
+                    pv_to_pipe()
     
     
     # check if all dummy videos exist
@@ -1015,8 +1054,7 @@ def on_restartstream(args):
 def startplayer(afreeca_id, player):
     def livestreamer(afreeca_id):
         toggles["livestreamer__on"] = RETRY_COUNT
-        while toggles["livestreamer__on"]:
-            toggles["livestreamer__on"] -= 1
+        while toggles["livestreamer__on"] > 0:
             if os.path.exists(_stream_rate_file):
                 try:
                     os.remove(_stream_rate_file)
@@ -1035,7 +1073,14 @@ def startplayer(afreeca_id, player):
             
             livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS)
             #livestreamer__cmd += " afreeca.com/%s best -O > %s" % (afreeca_id, _stream_pipel)
-            livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - -c copy -loglevel error -bsf:v h264_mp4toannexb -f mpegts %s" % (afreeca_id, _stream_pipel)
+            if (toggles["livestreamer__on"] == RETRY_COUNT - 1):
+                conn.msg("retrying for MPEGTS video container format")
+                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - -c copy -loglevel error \
+                                       -f mpegts %s" % (afreeca_id, _stream_pipel)
+            else:
+                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - -c copy -loglevel error \
+                                       -bsf:v h264_mp4toannexb -f mpegts %s" % (afreeca_id, _stream_pipel)
+            
             print("\n%s\n" % livestreamer__cmd)
             livestreamer__process = Popen(livestreamer__cmd, preexec_fn=os.setsid, shell=True)
             pids["livestreamer"] = livestreamer__process.pid
@@ -1045,7 +1090,8 @@ def startplayer(afreeca_id, player):
                 #conn.msg("reconnecting to %s (%s)  [%d retries left]" % \
                          #(player, afreeca_id, toggles["livestreamer__on"]))
                 pv_to_devnull()
-        
+            
+            toggles["livestreamer__on"] -= 1
         
         # carefull here, if to keep this in loop or not, or is it needed at all?
         if pid_alive(pids["pv_to_devnull"]):
@@ -1086,7 +1132,7 @@ def startplayer(afreeca_id, player):
     
     
     if pid_alive(mpids["livestreamer"]) or pid_alive(pids["livestreamer"]):
-        conn.msg("error, another afreeca playback stream is already running, wait a bit")
+        conn.msg("error, another afreeca playback stream is already running, wait a bit and try again")
         return True
     
     if not pid_alive(pids["ffmpeg"]):
@@ -1197,8 +1243,7 @@ def pv_to_devnull():
             return
             
     toggles["pv_to"] = "devnull"
-    _pv_interval = PV_DEVNULL_INTERVAL
-    pv_to_devnull__cmd = "pv %s -f -i %d -r 2>&1 1>/dev/null" % (_stream_pipel, _pv_interval)
+    pv_to_devnull__cmd = "pv %s -f -i %s -r 2>&1 1>/dev/null" % (_stream_pipel, str(PV_DEVNULL_INTERVAL))
     pv_to_devnull__cmd += " | while read -d $'\\r' line; do echo $line > %s; done" % _stream_rate_file
     pv_to_devnull__process = Popen(pv_to_devnull__cmd, preexec_fn=os.setsid, shell=True)
     pids["pv_to_devnull"] = pv_to_devnull__process.pid
@@ -1227,12 +1272,10 @@ def pv_to_pipe():
     toggles["livestreamer__on"] = RETRY_COUNT
     
     toggles["pv_to"] = "pipe"
-    _pv_interval = PV_PIPE_INTERVAL
-    pv_to_pipe__cmd = "pv %s -f -i %s -r 2>&1 1>%s" % (_stream_pipel, _pv_interval, _stream_pipe)
+    pv_to_pipe__cmd = "pv %s -f -i %s -r 2>&1 1>%s" % (_stream_pipel, str(PV_PIPE_INTERVAL), _stream_pipe)
     pv_to_pipe__cmd += " | while read -d $'\\r' line; do echo $line > %s; done" % _stream_rate_file
     pv_to_pipe__process = Popen(pv_to_pipe__cmd, preexec_fn=os.setsid, shell=True)
     pids["pv_to_pipe"] = pv_to_pipe__process.pid
-    #print("\n****(Popen)**** pv_to_pipe ******(%d)******\n" % pv_to_pipe__process.pid)
     debug_send("****(Popen)**** pv_to_pipe ******(%d)******" % pv_to_pipe__process.pid)
     #debug_send("%s > %s" % (_stream_pipel, _stream_pipe))
     toggles["pv_to"] = None
@@ -1303,6 +1346,9 @@ def on_refresh(args):
     if len(args) > 0 and args[0] != "--quiet":
         conn.msg("error, this command doesn't accept any arguments")
         return
+    
+    # resetting antispam timer (does not work)
+    #stream_supervisor.antispam.blocktime = datetime.fromtimestamp(0)
     
     if status["player"] != "[idle]" and status["afreeca_id"] is not None:
         on_setmanual([status["afreeca_id"], status["player"]])
@@ -1447,38 +1493,6 @@ def on_isbjon(args):
     start_multiprocess(isbjon, (afreeca_id,))
 
 
-#def old_isbjon(afreeca_id, quiet=False):
-    #user_agent = "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)"
-    #try:
-        #r = requests.get( "http://live.afreeca.com:8079/app/index.cgi"
-                        #, headers={"User-Agent": user_agent}, params=dict(szBjId=afreeca_id)
-                        #)
-        #match = re.search(r"<img id=\"broadImg\" src=\".+\/(\d+)\.gif\"", r.text)
-    #except Exception as x:
-        #conn.msg("warning, improper response from afreeca about broadcast jockey online status: " + str(x))
-        #return -1
-    
-    #if not quiet:
-        #conn.msg(afreeca_id + " is " + ("online" if match else "offline"))
-    
-    #return True if match else False
-
-def isbjon(afreeca_id, quiet=False):
-    try:
-        xml_tree = etree.parse("http://afbbs.afreeca.com:8080/api/video/get_bj_liveinfo.php?szBjId=" + \
-                               afreeca_id)
-        
-        result = xml_tree.find("result").text
-    except Exception as x:
-        debug_send("warning, improper response from afreeca about broadcast jockey online status: " + str(x))
-        return -1
-    
-    if not quiet:
-        conn.msg(afreeca_id + " is " + ("online" if result == '1' else "offline"))
-    
-    return True if result == '1' else False
-
-
 def on_commercial(args):
     if len(args) > 1:
         return False
@@ -1492,13 +1506,18 @@ def on_commercial(args):
     else:
         length = 30
     
-    if (datetime.now() - commercial.lastruntime[0]).seconds > 12*60:
-        start_multiprocess(commercial, args=(length,))
-    else:
+    if (datetime.now() - commercial.lastruntime[0]).seconds <= 12*60:
         conn.msg("error, interval between commercials is less than 12 minutes")
+        return
+    
+    start_multiprocess(commercial, args=(length,))
 
 def commercial(length):
     if (datetime.now() - commercial.lastruntime[0]).seconds <= 12*60:
+        return
+    
+    if not twitch_stream_online():
+        conn.msg("error, twitch stream is not running")
         return
     
     print("requesting %ds commercial" % length)
@@ -1550,6 +1569,7 @@ def on_title(args):
             except Exception as x:
                 debug_send( "warning, exception occured while sending twitch api request for "
                             "stream title update: " + str(x) )
+                return
             if r.status_code == 200:
                 if not quiet:
                     conn.msg("successfully updated twitch stream title")
@@ -1563,94 +1583,23 @@ def on_online(args):
     if len(args) > 1:
         return False
     
-    force = False
+    verbose = False
     if len(args) == 1:
-        if args[0] == "--force":
-            force = True
+        if args[0] == "--verbose":
+            verbose = True
         else:
             return False
     
     if not pid_alive(mpids["online_fetch"]):
-        start_multiprocess(online_fetch, (force,))
+        start_multiprocess(online_fetch, (afreeca_database,verbose,))
     else:
         debug_send("warning: attempted to start second mprocess for !online")
-
-
-def online_fetch(force=False, quiet=False):
-    @spawn_and_wait(70)
-    def proceed_online_fetch():
-        try:
-            xml_tree = etree.parse( "http://live.afreeca.com:8057/afreeca/broad_list_api.php?szType=xml"
-                                  , etree.XMLParser(ns_clean=True, recover=True)
-                                  )
-            real_broad = xml_tree.find("REAL_BROAD")
-        except Exception as x:
-            debug_send("exception occurred while getting xml list: " + str(x))
-            return
-        
-        online_bw_pro = []
-        
-        afreeca_database_fset = frozenset(afreeca_database.keys()) # maybe for better lookup performance
-        for bj in real_broad:
-            if bj.find("user_id").text in afreeca_database_fset and \
-            bj.find("broad_cate_no").text == "00040001":
-                online_bw_pro.append(afreeca_database[bj.find("user_id").text][NICKNAME_])
-        
-        online_bw_pro = sorted(online_bw_pro, key=lambda s: s.lower())
-        if not quiet:
-            conn.msg("players online: " + ", ".join(online_bw_pro))
-        with open("afreeca_online_list.json", 'w') as hF:
-            json.dump(online_bw_pro, hF, indent=4, separators=(',', ': '), sort_keys=True)
-    
-    
-    local_datetime = datetime.now()
-    local_unixtime = time.mktime(local_datetime.timetuple())
-    try:
-        TIME_DIFF_M = int((local_unixtime - os.path.getmtime("afreeca_online_list.json"))//60)
-    except:
-        TIME_DIFF_M = 100500
-    
-    try:
-        with open("afreeca_online_list.json", 'r') as hF:
-            online_bw_pro = json.load(hF)
-    except Exception as x:
-        debug_send(str(x))
-    else:
-        if TIME_DIFF_M < ONLINE_LIST_INTERVAL and not force:
-            if not quiet:
-                conn.msg("using recent fetch data (less than %d minutes old)" % ONLINE_LIST_INTERVAL)
-                conn.msg("players online: " + ", ".join(sorted(online_bw_pro, key=lambda s: s.lower())))
-            return frozenset(online_bw_pro)
-    
-    if not quiet:
-        conn.msg("fetching online streamers list...")
-    
-    
-    #proceed_online_fetch__mprocess = Process(target=proceed_online_fetch)
-    #proceed_online_fetch__mprocess.start()
-    #mpids["proceed_online_fetch"] = proceed_online_fetch__mprocess.pid
-    
-    #proceed_online_fetch__mprocess.join(70)
-    if proceed_online_fetch():
-        try:
-            with open("afreeca_online_list.json", 'r') as hF:
-                return frozenset(json.load(hF))
-        except Exception as x:
-            debug_send(str(x))
-            return -1
-    else:
-        debug_send("warning: [proceed_online_fetch] mprocess takes too long to proceed, terminating")
-        terminate_pid_m("proceed_online_fetch")
-        return -1
-        
-
 
 
 def on_version(args):
     if len(args) != 0:
         conn.msg("error, this command doesn't accept any arguments")
     conn.msg("Bot version: " + VERSION)
-
 
 
 
@@ -1935,15 +1884,28 @@ def main():
                    , STREAM[_stream_id]["channel"]
                    )
     
-
+    
     logging.basicConfig(level=logging.DEBUG)
     
     debug_send("========================")
     dump_status()
     
+    '''
+    # loading modules
+    for module_filename in os.listdir("modules/"):
+        if module_filename[-3:] == ".py" and os.path.isfile("modules/"+module_filename):
+            try:
+                module = __import__("modules." + module_filename)
+                sys.modules[module_filename[:-3]] = module
+            except Exception as x:
+                debug_send("error: couldn't import module: " + module_filename)
+    
+    # loading addons
     for addon_filename in os.listdir("addons/"):
         if addon_filename[-3:] == ".py" and os.path.isfile("addons/"+addon_filename):
             on_addon_load([addon_filename])
+    '''
+    afreeca_api.init(conn.msg, debug_send)
     
     conn.start()
 

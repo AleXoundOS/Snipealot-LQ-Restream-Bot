@@ -2,7 +2,7 @@
 ,   "setmanual": "!setmanual <afreeca_id> [nickname]\n starts afreeca restream for specified afreeca id; nickname argument is required in case afreeca id does not exists in database"
 ,   "stopstream": "!stopstream\n stops streaming to twitch for the current channel"
 ,   "startstream": "!startstream\n starts streaming to twitch"
-,   "online": "!online [--force]\n retreives list of known players online and prints it; --force option ignores minumum interval between requests"
+,   "online": "!online [--verbose]\n retreives list of known players online and prints it; \"verbose\" option is used to give more info"
 ,   "restartbot": "!restartbot\nexits bot script along with stopping the stream and starts the bot again; may be used in case of fatal problems"
 ,   "refresh": "!refresh\n restarts afreeca stream playback for currently restreamed streamer; may be useful in case of lag, as it often connects to another afreeca stream server"
 ,   "switch_irc": "!switch_irc\n switches between irc.twitch.tv and irc.quakenet.org IRC servers; very useful if bots automatically switched to fallback irc server after twitch was unable to establish irc connection"
