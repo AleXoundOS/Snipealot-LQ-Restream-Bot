@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.19"
+VERSION = "2.1.20"
 ACTIVE_BOTS = 4
 
 
@@ -764,7 +764,11 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
-            dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" -c copy -loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
+            #dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" -c copy -loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
+            dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" " \
+                                    "-c:v copy -c:a libmp3lame -ar 44100 " \
+                                    "-loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
+            print("\n%s\n" % dummy_video_loop__cmd)
             dummy_video_loop__process = Popen(dummy_video_loop__cmd, preexec_fn=os.setsid, shell=True)
             pids["dummy_video_loop"] = dummy_video_loop__process.pid
             dummy_video_loop__process.wait()
@@ -965,8 +969,8 @@ def on_startstream(args):
         
         # starting ffmpeg to stream from pipe
         ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
-        #ffmpeg__cmd += [ "-vcodec", "copy", "-acodec", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
-        ffmpeg__cmd += [ "-c:v", "copy", "-c:a", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
+        #ffmpeg__cmd += [ "-c:v", "copy", "-c:a", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
+        ffmpeg__cmd += ffmpeg_options
         ffmpeg__cmd += [ "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
         # Popen(, cwd="folder")
         print("\n%s\n" % ' '.join(ffmpeg__cmd))
@@ -1075,11 +1079,15 @@ def startplayer(afreeca_id, player):
             #livestreamer__cmd += " afreeca.com/%s best -O > %s" % (afreeca_id, _stream_pipel)
             if (toggles["livestreamer__on"] == RETRY_COUNT - 1):
                 conn.msg("retrying for MPEGTS video container format")
-                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - -c copy -loglevel error \
-                                       -f mpegts %s" % (afreeca_id, _stream_pipel)
+                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - " \
+                                     " -c:v copy -c:a libmp3lame -ar 44100 " \
+                                     " -loglevel error " \
+                                     " -f mpegts %s" % (afreeca_id, _stream_pipel)
             else:
-                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - -c copy -loglevel error \
-                                       -bsf:v h264_mp4toannexb -f mpegts %s" % (afreeca_id, _stream_pipel)
+                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - " \
+                                     " -c:v copy -c:a libmp3lame -ar 44100 " \
+                                     " -loglevel error -bsf:v h264_mp4toannexb " \
+                                     " -f mpegts %s" % (afreeca_id, _stream_pipel)
             
             print("\n%s\n" % livestreamer__cmd)
             livestreamer__process = Popen(livestreamer__cmd, preexec_fn=os.setsid, shell=True)
