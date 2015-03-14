@@ -23,7 +23,7 @@ import logging
 import re
 import os
 from multiprocessing import Process, Manager, active_children
-from subprocess import Popen
+from subprocess import Popen, PIPE
 import time
 import requests
 from lxml import etree
@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.20"
+VERSION = "2.1.23"
 ACTIVE_BOTS = 4
 
 
@@ -628,7 +628,7 @@ def voting(vote_set=None):
     
     max_votes = max(these_votes.values())
     if max_votes > 0:
-        conn.msg("voting ended, "+', '.join(["%s: %d" % (k2,v2) for k2,v2 in these_votes.items() if v2 > 0]))
+        conn.msg("voting ended; "+', '.join(["%s: %d" % (k2,v2) for k2,v2 in these_votes.items() if v2 > 0]))
         winners = [k for k, v in these_votes.items() if v == max_votes]
         if len(winners) == 1:
             clear_votes()
@@ -968,7 +968,8 @@ def on_startstream(args):
         keep_pipe(_stream_pipe)
         
         # starting ffmpeg to stream from pipe
-        ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
+        #ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
+        ffmpeg__cmd = [ "ffmpeg", "-i", _stream_pipe ]
         #ffmpeg__cmd += [ "-c:v", "copy", "-c:a", "libmp3lame", "-ab", "128k" ] + ffmpeg_options
         ffmpeg__cmd += ffmpeg_options
         ffmpeg__cmd += [ "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
@@ -1057,6 +1058,7 @@ def on_restartstream(args):
 
 def startplayer(afreeca_id, player):
     def livestreamer(afreeca_id):
+        container_type = "FLV"
         toggles["livestreamer__on"] = RETRY_COUNT
         while toggles["livestreamer__on"] > 0:
             if os.path.exists(_stream_rate_file):
@@ -1075,31 +1077,47 @@ def startplayer(afreeca_id, player):
                 conn.msg(str(x))
                 return
             
+            
             livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS)
-            #livestreamer__cmd += " afreeca.com/%s best -O > %s" % (afreeca_id, _stream_pipel)
-            if (toggles["livestreamer__on"] == RETRY_COUNT - 1):
+            livestreamer__cmd += " afreeca.com/%s best -O" % (afreeca_id)
+            
+            if container_type == "FLV":
+                ffmpeg__cmd =  " ffmpeg -y -i - " \
+                               " -c:v copy -c:a libmp3lame -ar 44100 " \
+                               " -loglevel error -bsf:v h264_mp4toannexb " \
+                               " -f mpegts %s" % (_stream_pipel)
+            else: # container_type == "MPEGTS"
                 conn.msg("retrying for MPEGTS video container format")
-                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - " \
-                                     " -c:v copy -c:a libmp3lame -ar 44100 " \
-                                     " -loglevel error " \
-                                     " -f mpegts %s" % (afreeca_id, _stream_pipel)
-            else:
-                livestreamer__cmd += " afreeca.com/%s best -O | ffmpeg -y -re -i - " \
-                                     " -c:v copy -c:a libmp3lame -ar 44100 " \
-                                     " -loglevel error -bsf:v h264_mp4toannexb " \
-                                     " -f mpegts %s" % (afreeca_id, _stream_pipel)
+                ffmpeg__cmd =  " ffmpeg -y -i - " \
+                               " -c:v copy -c:a libmp3lame -ar 44100 " \
+                               " -loglevel error " \
+                               " -f mpegts %s" % (_stream_pipel)
             
-            print("\n%s\n" % livestreamer__cmd)
-            livestreamer__process = Popen(livestreamer__cmd, preexec_fn=os.setsid, shell=True)
+            print("\n%s | %s\n" % (livestreamer__cmd, ffmpeg__cmd))
+            
+            livestreamer__process = Popen(livestreamer__cmd, stdout=PIPE, preexec_fn=os.setsid, shell=True)
             pids["livestreamer"] = livestreamer__process.pid
-            livestreamer__exit_code = livestreamer__process.wait()
             
-            if toggles["livestreamer__on"]:
-                #conn.msg("reconnecting to %s (%s)  [%d retries left]" % \
-                         #(player, afreeca_id, toggles["livestreamer__on"]))
-                pv_to_devnull()
+            ffmpeg__process = Popen( ffmpeg__cmd, stdin=livestreamer__process.stdout
+                                   , preexec_fn=os.setsid, shell=True )
+            pids["l_ffmpeg"] = ffmpeg__process.pid
+            
+            livestreamer__process.stdout.close()
+            ffmpeg__process.communicate()
+            
+            livestreamer__exit_code = livestreamer__process.wait()
+            ffmpeg__exit_code = ffmpeg__process.wait()
             
             toggles["livestreamer__on"] -= 1
+            
+            if toggles["livestreamer__on"] > 0:
+                print("reconnecting to %s (%s)  [%d retries left], exit codes: %d %d" % \
+                         (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
+                pv_to_devnull()
+                
+                # setting stream container type based on error codes
+                if livestreamer__exit_code == 0 and ffmpeg__exit_code == 1:
+                    container_type = "MPEGTS"
         
         # carefull here, if to keep this in loop or not, or is it needed at all?
         if pid_alive(pids["pv_to_devnull"]):
@@ -1127,16 +1145,18 @@ def startplayer(afreeca_id, player):
         tldef__mprocess.start()
         mpids["tldef"] = tldef__mprocess.pid
         
-        debug_send("livestreamer ended with code " + str(livestreamer__exit_code))
+        debug_send("livestreamer ended with codes: %d %d" % (livestreamer__exit_code, ffmpeg__exit_code))
         
         start_multiprocess(commercial, args=(30,))
         
-        if livestreamer__exit_code == 1:
+        if livestreamer__exit_code == 1 and ffmpeg__exit_code == 1:
             conn.msg("afreeca stream appears to be offline, inaccessible or has incompatible stream container")
+        #elif livestreamer__exit_code == 0 and ffmpeg__exit_code == 1:
+            #conn.msg("afreeca stream has incompatible stream container")
         elif livestreamer__exit_code == -15:
             conn.msg("afreeca stream playback ended")
         else:
-            conn.msg("afreeca stream playback ended with code: " + str(livestreamer__exit_code))
+            conn.msg("afreeca stream playback ended with exit codes: %d %d" % (livestreamer__exit_code, ffmpeg__exit_code))
     
     
     if pid_alive(mpids["livestreamer"]) or pid_alive(pids["livestreamer"]):
@@ -1202,25 +1222,37 @@ def on_stopplayer(args):
             time.sleep(0.1)
         
         
-        if pid_alive(pids["livestreamer"]):
+        if pid_alive(pids["livestreamer"]) or pid_alive(pids["l_ffmpeg"]):
             toggles["livestreamer__on"] = False
-            if terminate_pid_p("livestreamer"):
-                counter = 40
-                while pid_alive(mpids["livestreamer"]) and counter >= 0:
-                    counter -= 1
-                    time.sleep(0.3)
-                
-                if not pid_alive(mpids["livestreamer"]):
-                    time.sleep(0.1)
-                    #conn.msg("afreeca playback stopped")
-                else:
-                    debug_send("error, [livestreamer] internal process is still running")
-                    return -1
+            if pid_alive(pids["livestreamer"]):
+                if not terminate_pid_p("livestreamer"):
+                    time.sleep(1)
+                    if not terminate_pid_p("livestreamer"):
+                        debug_send("couldn't terminate livestreamer process")
+                        return -1
+            
+            if pid_alive(pids["l_ffmpeg"]):
+                if not terminate_pid_p("l_ffmpeg"):
+                    time.sleep(1)
+                    if not terminate_pid_p("l_ffmpeg"):
+                        debug_send("couldn't terminate l_ffmpeg process")
+                        return -1
+            
+            counter = 40
+            while pid_alive(mpids["livestreamer"]) and counter >= 0:
+                counter -= 1
+                time.sleep(0.3)
+            
+            if not pid_alive(mpids["livestreamer"]):
+                time.sleep(0.1)
+                #conn.msg("afreeca playback stopped")
             else:
-                debug_send("couldn't terminate livestreamer")
+                debug_send("error, [livestreamer] mprocess is still running")
                 return -1
+            
         else:
-            debug_send("fatal error, livestreamer internal process exists without external one")
+            #debug_send("fatal error, livestreamer internal process exists without external one")
+            debug_send("fatal error, livestreamer internal process exists without external one, try !restartbot")
     else:
         conn.msg("error, afreeca playback is not running")
 
