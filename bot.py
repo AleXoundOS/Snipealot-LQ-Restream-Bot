@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.23"
+VERSION = "2.1.26"
 ACTIVE_BOTS = 4
 
 
@@ -683,7 +683,8 @@ def stream_supervisor():
                     print("[dbg] choice_dicts = %s" % ", ".join([bj["nickname"] for bj in online_BJs]))
                     for bj in online_BJs:
                         print("[dbg] checking player {%s}" % bj["nickname"])
-                        if (bj["nickname"] not in onstream_set) and (bj["nickname"] not in forbidden_players):
+                        if (bj["nickname"] not in onstream_set) and (bj["nickname"] not in forbidden_players) and \
+                           (bj["is_password"] == "N"):
                             choice_dicts.append(bj)
                     #choice_set = online_set - onstream_set - forbidden_players
                     
@@ -697,7 +698,12 @@ def stream_supervisor():
                         #counter -= 1
                         #time.sleep(1)
                 ####################
-                if len(choice_dicts) == 1:
+                if len(choice_dicts) == 0:
+                    random_onstream_player = random.choice(list(onstream_set))
+                    conn.msg("stream was idle for more than %d seconds, picking random onstream streamer %s" % \
+                     (AUTOSWITCH_START_DELAY, random_onstream_player))
+                    on_setplayer(random_onstream_player)
+                elif len(choice_dicts) == 1:
                     conn.msg("stream was idle for more than %d seconds, switching to %s" % \
                      (AUTOSWITCH_START_DELAY, choice_dicts[0]["nickname"]))
                     on_setplayer([choice_dicts[0]["nickname"]])
