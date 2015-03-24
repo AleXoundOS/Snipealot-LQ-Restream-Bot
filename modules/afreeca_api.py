@@ -117,7 +117,9 @@ def isbjon(afreeca_id, quiet=False):
     if not quiet:
         #print_msg(afreeca_id + " is " + ( "online (%s pc viewers, i.e. excluding mobile viewers)" % xml_tree.find("view_cnt").text
                                           #if result == '1' else "offline" ))
-        print_msg(afreeca_id + " is " + ( "online (%s viewers)" % xml_tree.find("view_cnt").text
+        #print_msg(afreeca_id + " is " + ( "online (%s viewers)" % xml_tree.find("view_cnt").text
+                                          #if result == '1' else "offline" ))
+        print_msg(afreeca_id + " is " + ( "online (%s viewers at main room)" % xml_tree.find("view_cnt").text
                                           if result == '1' else "offline" ))
     
     return True if result == '1' else False

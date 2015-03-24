@@ -39,14 +39,14 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.26"
+VERSION = "2.1.28"
 ACTIVE_BOTS = 4
 
 
 TWITCH_POLL_INTERVAL = 14*60 # seconds
 ONLINE_LIST_INTERVAL = 1 # minutes
 SUPERVISOR_INTERVAL = 3 # seconds
-NON_ZERO_READS_COUNT_NEEDED = 3
+MIN_INPUT_RATE = 37*1024 # kilobytes per second
 
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
 TWITCH_V3_HEADER = { "Accept": "application/vnd.twitchtv.v3+json" }
@@ -120,6 +120,7 @@ def load_settings(filename):
     DEFILER_API = settings["DEFILER_API"]
     DEBUG = settings["DEBUG"]
     TEST = settings["TEST"]
+    MIN_INPUT_RATE = settings["MIN_INPUT_RATE"]
     dummy_videos[:] = settings["DUMMY_VIDEOS"]
         
     
@@ -644,7 +645,7 @@ def voting(vote_set=None):
 
 
 def stream_supervisor():
-    print("streaming supervisor launched")
+    print("stream supervisor started")
         
     def autoswitch():
         if pid_alive(mpids["livestreamer"]) or toggles["voting__on"]:
@@ -679,14 +680,13 @@ def stream_supervisor():
                                                  onstream_set - forbidden_players ) == 0):
                     pass
                 else:
-                    print("[dbg] onstream_set = %s" % str(onstream_set))
-                    print("[dbg] choice_dicts = %s" % ", ".join([bj["nickname"] for bj in online_BJs]))
+                    #print("[dbg] onstream_set = %s" % str(onstream_set))
+                    #print("[dbg] choice_dicts = %s" % ", ".join([bj["nickname"] for bj in online_BJs]))
                     for bj in online_BJs:
-                        print("[dbg] checking player {%s}" % bj["nickname"])
+                        #print("[dbg] checking player {%s}" % bj["nickname"])
                         if (bj["nickname"] not in onstream_set) and (bj["nickname"] not in forbidden_players) and \
                            (bj["is_password"] == "N"):
                             choice_dicts.append(bj)
-                    #choice_set = online_set - onstream_set - forbidden_players
                     
                 # doubful code... #############
                 #if not pid_alive(mpids["ffmpeg"]) and toggles["streaming__enabled"]:
@@ -747,9 +747,11 @@ def stream_supervisor():
                 dummy_videos = [ f for f in os.listdir("dummy_videos/") \
                                  if os.path.isfile("dummy_videos/"+f) ]
                                  #if f[-3:] == ".ts" and os.path.isfile("dummy_videos/"+f) ]
-                                 
-                
-            
+            if len(dummy_videos) == 0:
+                conn.msg("fatal error, no dummy videos found, sleeping for 8 minutes")
+                sleep(60*8)
+                toggles["dummy_video_loop__on"] = False
+                return
             
             dummy_videofile = "dummy_videos/" + random.choice(dummy_videos)
             if os.path.isfile(dummy_videofile):
@@ -771,7 +773,7 @@ def stream_supervisor():
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
             #dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" -c copy -loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
-            dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" " \
+            dummy_video_loop__cmd = "ffmpeg -y -re -fflags +nobuffer -i \"" + dummy_videofile + "\" " \
                                     "-c:v copy -c:a libmp3lame -ar 44100 " \
                                     "-loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
             print("\n%s\n" % dummy_video_loop__cmd)
@@ -816,32 +818,60 @@ def stream_supervisor():
                 # turn on dummy video
                 start_dummy_video()
         elif pid_alive(pids["livestreamer"]):
-            several_non_zero_reads = 0
             try:
-                while several_non_zero_reads < NON_ZERO_READS_COUNT_NEEDED:
-                    try:
-                        hF = open(_stream_rate_file, 'r')
-                    except Exception as x:
-                        debug_send("cannot open input rate file: " + str(x))
-                        return
+                try:
+                    hF = open(_stream_rate_file, 'r')
+                except Exception as x:
+                    print("cannot open input rate file: " + str(x))
+                    return
+
+                inside_digits = False
+                inside_units = False
+                digits = ""
+                units = ""
+                for char in hF.read(16):
+                    if char.isdigit():
+                        inside_digits = True
+                    if not char.isdigit() and char != '.' and inside_digits == True:
+                        inside_digits = False
+                        inside_units = True
                     
-                    for char in hF.read(3):
-                        if char.isdigit():
-                            break
-                    if char != '0':
-                        several_non_zero_reads += 1
-                    else:
+                    if inside_units == True and char == ']':
                         break
                     
-                    hF.close()
-                    time.sleep(PV_DEVNULL_INTERVAL)
+                    if inside_digits:
+                        digits += char
+                    if inside_units == True:
+                        units += char
+                
+                hF.close()
+                
+                units = units.strip()
+                
+                if units == "B/s":
+                    units_multiplier = 1
+                elif units == "KiB/s":
+                    units_multiplier = 1024
+                elif units == "MiB/s":
+                    units_multiplier = 1024*1024
+                else:
+                    debug_send("error while parsing stream input rate file")
+                    return
+                
+                rate = float(digits) * units_multiplier
+                
+                # debug output, shows what it has read and calculated rate in bytes
+                #with open(_stream_rate_file, 'r') as hF:
+                    #print("%s  %f %s  [%s]" % (hF.read(16)[:-1], float(digits), units, rate))
+            
             except Exception as x:
                 debug_send("exception occurred while reading input rate file: [%d] %s" % (sys.exc_info()[-1].tb_lineno, str(x)))
                 toggles["dummy_video_loop__on"] = False
                 if pid_alive(pids["livestreamer"]):
                     pv_to_devnull()
+                return
             
-            if several_non_zero_reads < NON_ZERO_READS_COUNT_NEEDED:
+            if rate < MIN_INPUT_RATE:
                 pv_to_devnull()
                 #if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]) and \
                 #not toggles["dummy_video_loop__on"]:
@@ -1088,13 +1118,13 @@ def startplayer(afreeca_id, player):
             livestreamer__cmd += " afreeca.com/%s best -O" % (afreeca_id)
             
             if container_type == "FLV":
-                ffmpeg__cmd =  " ffmpeg -y -i - " \
+                ffmpeg__cmd =  " ffmpeg -y -fflags +nobuffer -i - " \
                                " -c:v copy -c:a libmp3lame -ar 44100 " \
                                " -loglevel error -bsf:v h264_mp4toannexb " \
                                " -f mpegts %s" % (_stream_pipel)
             else: # container_type == "MPEGTS"
                 conn.msg("retrying for MPEGTS video container format")
-                ffmpeg__cmd =  " ffmpeg -y -i - " \
+                ffmpeg__cmd =  " ffmpeg -y -fflags +nobuffer -i - " \
                                " -c:v copy -c:a libmp3lame -ar 44100 " \
                                " -loglevel error " \
                                " -f mpegts %s" % (_stream_pipel)
@@ -1162,7 +1192,7 @@ def startplayer(afreeca_id, player):
         elif livestreamer__exit_code == -15:
             conn.msg("afreeca stream playback ended")
         else:
-            conn.msg("afreeca stream playback ended with exit codes: %d %d" % (livestreamer__exit_code, ffmpeg__exit_code))
+            print("afreeca stream playback ended with exit codes: %d %d" % (livestreamer__exit_code, ffmpeg__exit_code))
     
     
     if pid_alive(mpids["livestreamer"]) or pid_alive(pids["livestreamer"]):
