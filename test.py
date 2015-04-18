@@ -1,5 +1,5 @@
 from modules import afreeca_api
-from modules.afreeca_api import isbjon, get_online_BJs
+from modules.afreeca_api import isbjon, get_online_BJs, print_online_list
 import json
 
 def load_afreeca_database(filename):
@@ -9,13 +9,14 @@ def load_afreeca_database(filename):
 def main():
     #afreeca_api.init(print_msg, print_msg)
     afreeca_database = load_afreeca_database("afreeca_database.json")
-    choice_dicts = get_online_BJs(afreeca_database, verbose=True, broadlist_filename="test_data/broad_list_api_2.js")
-    #choice_dicts = get_online_BJs(afreeca_database, verbose=True)
+    #choice_dicts = get_online_BJs(afreeca_database, verbose=True, broadlist_filename="test_data/broad_list_api_2.js")
+    choice_dicts = get_online_BJs(afreeca_database, verbose=False)
     
+    
+    
+    '''
     onstream_set = ["IcaruS", "leto", "Sonic"]
     forbidden_players = ["Movie", "Hwasin"]
-    
-    print(choice_dicts)
     
     for bj in choice_dicts:
         if (bj["nickname"] in onstream_set) or (bj["nickname"] in forbidden_players):
@@ -23,6 +24,8 @@ def main():
     
     print()
     print(choice_dicts)
+    '''
+    
     #BJs = 
     #print(BJs)
     #print(len(get_online_BJs(afreeca_database, broadlist_filename="broad_list_api_2.js")))

@@ -39,14 +39,15 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.28"
+VERSION = "2.1.37"
 ACTIVE_BOTS = 4
 
 
 TWITCH_POLL_INTERVAL = 14*60 # seconds
 ONLINE_LIST_INTERVAL = 1 # minutes
-SUPERVISOR_INTERVAL = 3 # seconds
+SUPERVISOR_INTERVAL = 1 # seconds
 MIN_INPUT_RATE = 37*1024 # kilobytes per second
+HLS_RATE_LIMIT = "148k"
 
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
 TWITCH_V3_HEADER = { "Accept": "application/vnd.twitchtv.v3+json" }
@@ -121,6 +122,7 @@ def load_settings(filename):
     DEBUG = settings["DEBUG"]
     TEST = settings["TEST"]
     MIN_INPUT_RATE = settings["MIN_INPUT_RATE"]
+    HLS_RATE_LIMIT = settings["HLS_RATE_LIMIT"]
     dummy_videos[:] = settings["DUMMY_VIDEOS"]
         
     
@@ -466,18 +468,30 @@ class IRCClass(SimpleIRCClient):
     
     
     def msg(self, message):
+        def split_and_send_string(string):
+            string_index = 0
+            while True:
+                string_index = 0
+                self.connection.privmsg(self.channel, string[:510])
+                string_index += 510
+                if (len(string) - string_index > 0):
+                    print("sleeping for 1.5 seconds after 510 characters in message")
+                    time.sleep(1.5)
+                else:
+                    break
+        
         if self.connection.is_connected():
             message_list = message.split('\n')
             lines_count = len(message_list)
             if lines_count > 1:
                 for line in message_list:
-                    self.connection.privmsg(self.channel, line)
+                    split_and_send_string(line)
                     lines_count -= 1
                     if lines_count > 0:
-                        print("sleeping for 2 seconds after new line in a message")
-                        time.sleep(2)
+                        print("sleeping for 1.5 seconds after new line in a message")
+                        time.sleep(1.5)
             else:
-                self.connection.privmsg(self.channel, message)
+                split_and_send_string(message)
         else:
             print("not connected, redirected message to stdout: " + message)
 
@@ -920,7 +934,7 @@ def stream_supervisor():
             if toggles["streaming__enabled"]:
                 conn.msg("supervisor starts streaming to twitch...")
                 on_startstream([])
-                time.sleep(SUPERVISOR_INTERVAL)
+                time.sleep(4)
                 on_refresh(["--quiet"])
                 # or retransmit command with corresponding stream_id argument to another bot?
                 twitch_stream_online_supervisor.counter = TWITCH_POLL_INTERVAL
@@ -1123,11 +1137,11 @@ def startplayer(afreeca_id, player):
                                " -loglevel error -bsf:v h264_mp4toannexb " \
                                " -f mpegts %s" % (_stream_pipel)
             else: # container_type == "MPEGTS"
-                conn.msg("retrying for MPEGTS video container format")
-                ffmpeg__cmd =  " ffmpeg -y -fflags +nobuffer -i - " \
-                               " -c:v copy -c:a libmp3lame -ar 44100 " \
-                               " -loglevel error " \
-                               " -f mpegts %s" % (_stream_pipel)
+                ffmpeg__cmd =   "pv --rate-limit %s --wait --buffer-percent --timer | "
+                ffmpeg__cmd +=  " ffmpeg -y -fflags +nobuffer -i - " \
+                                " -c:v copy -c:a libmp3lame -ar 44100 " \
+                                " -loglevel error " \
+                                " -f mpegts %s" % (HLS_RATE_LIMIT, _stream_pipel)
             
             print("\n%s | %s\n" % (livestreamer__cmd, ffmpeg__cmd))
             
@@ -1152,8 +1166,10 @@ def startplayer(afreeca_id, player):
                 pv_to_devnull()
                 
                 # setting stream container type based on error codes
-                if livestreamer__exit_code == 0 and ffmpeg__exit_code == 1:
+                if livestreamer__exit_code == 0 and ffmpeg__exit_code == 1 and container_type != "MPEGTS":
+                    conn.msg("using MPEGTS/hls video container format settings")
                     container_type = "MPEGTS"
+                    toggles["livestreamer__on"] += 1
         
         # carefull here, if to keep this in loop or not, or is it needed at all?
         if pid_alive(pids["pv_to_devnull"]):
@@ -1329,6 +1345,7 @@ def pv_to_devnull():
     toggles["pv_to"] = None
 
 def pv_to_pipe():
+    #print("\n\n\ncontainer type = " + startplayer.container_type + "\n\n\n")
     if toggles["pv_to"] == "pipe" or pid_alive(pids["pv_to_pipe"]):
         #print("_____________________[dbg1] pv_to_pipe is already alive")
         return
@@ -1593,7 +1610,7 @@ def commercial(length):
         return
     
     if not twitch_stream_online():
-        conn.msg("error, twitch stream is not running")
+        conn.msg("error, cannot start commercial - twitch stream is not running")
         return
     
     print("requesting %ds commercial" % length)

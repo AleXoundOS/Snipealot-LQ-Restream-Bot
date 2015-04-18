@@ -92,6 +92,9 @@ def get_online_BJs(afreeca_database, verbose=False, quiet=False, tune_oom=False,
     # sorting by afreeca rank
     online_BJs = sorted(online_BJs, key=lambda s: int(s["rank"]))
     
+    # sorting by password existence
+    online_BJs = sorted(online_BJs, key=lambda s: s["is_password"] != "N")
+    
     # sorting streams with vods to end of list
     online_BJs = sorted(online_BJs, key=lambda s: ("[재]" in s["broad_title"]))
     
