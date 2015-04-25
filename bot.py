@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.37"
+VERSION = "2.1.38"
 ACTIVE_BOTS = 4
 
 
@@ -1137,11 +1137,11 @@ def startplayer(afreeca_id, player):
                                " -loglevel error -bsf:v h264_mp4toannexb " \
                                " -f mpegts %s" % (_stream_pipel)
             else: # container_type == "MPEGTS"
-                ffmpeg__cmd =   "pv --rate-limit %s --wait --buffer-percent --timer | "
+                ffmpeg__cmd =   "pv --rate-limit %s --wait --buffer-percent --timer --rate --bytes | " % (HLS_RATE_LIMIT)
                 ffmpeg__cmd +=  " ffmpeg -y -fflags +nobuffer -i - " \
                                 " -c:v copy -c:a libmp3lame -ar 44100 " \
                                 " -loglevel error " \
-                                " -f mpegts %s" % (HLS_RATE_LIMIT, _stream_pipel)
+                                " -f mpegts %s" % (_stream_pipel)
             
             print("\n%s | %s\n" % (livestreamer__cmd, ffmpeg__cmd))
             
