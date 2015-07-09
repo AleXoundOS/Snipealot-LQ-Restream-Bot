@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.44"
+VERSION = "2.1.47"
 ACTIVE_BOTS = 4
 
 
@@ -786,9 +786,14 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
-            dummy_video_loop__cmd = "ffmpeg -y -re -i \"" + dummy_videofile + "\" " \
-                                    "-c copy -loglevel error " \
+            dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer " \
+                                    "-re -i \"" + dummy_videofile + "\" " \
+                                    "-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
                                     "-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
+            #dummy_video_loop__cmd = "ffmpeg -y " \
+                                    #"-re -i \"" + dummy_videofile + "\" " \
+                                    #"-c copy -loglevel error " \
+                                    #"-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
             #dummy_video_loop__cmd = "ffmpeg -y -re -flags +global_header -fflags +genpts+igndts+nobuffer -i \"" + dummy_videofile + "\" " \
                                     #"-vsync 0 -c:v copy -c:a libmp3lame -ar 44100 " \
                                     #"-loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
@@ -1026,6 +1031,8 @@ def on_startstream(args):
         ffmpeg__cmd += [ "-i", _stream_pipe ]
         #ffmpeg__cmd += [ "-c", "copy", "-copyinkf" ]
         ffmpeg__cmd += [ "-vsync", "0", "-c:v", "copy" ]
+        #ffmpeg__cmd += [ "-c:v", "copy", "-copyinkf" ]
+        #ffmpeg__cmd += [ "-c:v", "copy" ]
         ffmpeg__cmd += [ "-c:a", "libfdk_aac", "-cutoff", "18000", "-b:a", "128k" ]
         ffmpeg__cmd += [ "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
         #ffmpeg__cmd += [ "-bsf:a", "aac_adtstoasc", "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
@@ -1142,24 +1149,28 @@ def startplayer(afreeca_id, player):
                                #" -vsync 0 -c:v copy -c:a libmp3lame -ar 44100 " \
                                #" -loglevel error -bsf:v h264_mp4toannexb " \
                                #" -f mpegts %s" % (_stream_pipel)
-                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer -i - " \
-                               " -c copy " \
-                               " -loglevel error -bsf:v h264_mp4toannexb " \
-                               " -f mpegts %s" % (_stream_pipel)
-                #ffmpeg__cmd =  " ffmpeg -y -fflags +global_header+genpts+igndts+nobuffer -i - " \
-                               #" -copyinkf -c:v copy -c:a libmp3lame -ar 44100 " \
-                               #" -copyts -loglevel error -bsf:v h264_mp4toannexb " \
+                #ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer -i - " \
+                               #" -c copy " \
+                               #" -loglevel error -bsf:v h264_mp4toannexb " \
                                #" -f mpegts %s" % (_stream_pipel)
+                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags genpts+igndts+nobuffer -i - " \
+                               " -c:v copy -c:a libmp3lame -ar 44100 " \
+                               " -copyts -loglevel error -bsf:v h264_mp4toannexb " \
+                               " -f mpegts %s" % (_stream_pipel)
             else: # container_type == "MPEGTS"
                 ffmpeg__cmd =   "pv --rate-limit %s --wait --buffer-percent --timer --rate --bytes | " % (HLS_RATE_LIMIT)
+                ffmpeg__cmd +=  " ffmpeg -y -fflags +nobuffer -i - " \
+                                " -c:v copy -c:a libmp3lame -ar 44100 " \
+                                " -loglevel error " \
+                                " -f mpegts %s" % (_stream_pipel)
                 #ffmpeg__cmd +=  " ffmpeg -y -fflags +nobuffer -i - " \
                                 #" -c:v copy -c:a libmp3lame -ar 44100 " \
                                 #" -loglevel error " \
                                 #" -f mpegts %s" % (_stream_pipel)
-                ffmpeg__cmd +=  " ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer -i - " \
-                                " -c copy " \
-                                " -loglevel error " \
-                                " -f mpegts %s" % (_stream_pipel)
+                #ffmpeg__cmd +=  " ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer -i - " \
+                                #" -c copy " \
+                                #" -loglevel error " \
+                                #" -f mpegts %s" % (_stream_pipel)
             
             print("\n%s | %s\n" % (livestreamer__cmd, ffmpeg__cmd))
             
