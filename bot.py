@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.47"
+VERSION = "2.1.47no2"
 ACTIVE_BOTS = 4
 
 
@@ -1153,7 +1153,7 @@ def startplayer(afreeca_id, player):
                                #" -c copy " \
                                #" -loglevel error -bsf:v h264_mp4toannexb " \
                                #" -f mpegts %s" % (_stream_pipel)
-                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +nobuffer -i - " \
+                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +nobuffer -xerror -i - " \
                                " -c:v copy -c:a libmp3lame -ar 44100 " \
                                " -copyts -loglevel error -bsf:v h264_mp4toannexb " \
                                " -f mpegts %s" % (_stream_pipel)
@@ -1189,6 +1189,7 @@ def startplayer(afreeca_id, player):
             
             toggles["livestreamer__on"] -= 1
             
+            print("livestreamer__exit_code = %d, ffmpeg__exit_code = %d" % (livestreamer__exit_code, ffmpeg__exit_code))
             if toggles["livestreamer__on"] > 0:
                 print("reconnecting to %s (%s)  [%d retries left], exit codes: %d %d" % \
                          (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
