@@ -786,7 +786,7 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
-            dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer " \
+            dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
                                     "-re -i \"" + dummy_videofile + "\" " \
                                     "-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
                                     "-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
@@ -1153,7 +1153,7 @@ def startplayer(afreeca_id, player):
                                #" -c copy " \
                                #" -loglevel error -bsf:v h264_mp4toannexb " \
                                #" -f mpegts %s" % (_stream_pipel)
-                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags genpts+igndts+nobuffer -i - " \
+                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +nobuffer -i - " \
                                " -c:v copy -c:a libmp3lame -ar 44100 " \
                                " -copyts -loglevel error -bsf:v h264_mp4toannexb " \
                                " -f mpegts %s" % (_stream_pipel)
