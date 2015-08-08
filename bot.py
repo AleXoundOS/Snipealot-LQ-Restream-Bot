@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.47no2"
+VERSION = "2.1.47ts"
 ACTIVE_BOTS = 4
 
 
@@ -758,8 +758,8 @@ def stream_supervisor():
             
             global dummy_videos
             if len(dummy_videos) == 0:
-                dummy_videos = [ f for f in os.listdir("dummy_videos/") \
-                                 if os.path.isfile("dummy_videos/"+f) ]
+                dummy_videos = [ f for f in os.listdir("dummy_videos/ts/") \
+                                 if os.path.isfile("dummy_videos/ts/"+f) ]
                                  #if f[-3:] == ".ts" and os.path.isfile("dummy_videos/"+f) ]
             if len(dummy_videos) == 0:
                 conn.msg("fatal error, no dummy videos found, sleeping for 8 minutes")
@@ -767,7 +767,7 @@ def stream_supervisor():
                 toggles["dummy_video_loop__on"] = False
                 return
             
-            dummy_videofile = "dummy_videos/" + random.choice(dummy_videos)
+            dummy_videofile = "dummy_videos/ts/" + random.choice(dummy_videos)
             if os.path.isfile(dummy_videofile):
                 debug_send("* using \"%s\" video file" % dummy_videofile)
             else:
@@ -786,10 +786,15 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
+            #dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
+                                    #"-re -i \"" + dummy_videofile + "\" " \
+                                    #"-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
+                                    #"-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
             dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
                                     "-re -i \"" + dummy_videofile + "\" " \
                                     "-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
-                                    "-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
+                                    "-f mpegts " + _stream_pipe
+            
             #dummy_video_loop__cmd = "ffmpeg -y " \
                                     #"-re -i \"" + dummy_videofile + "\" " \
                                     #"-c copy -loglevel error " \
@@ -1027,7 +1032,7 @@ def on_startstream(args):
         # starting ffmpeg to stream from pipe
         #ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
         ffmpeg__cmd = [ "ffmpeg" ]
-        ffmpeg__cmd += ffmpeg_options
+        #ffmpeg__cmd += ffmpeg_options
         ffmpeg__cmd += [ "-i", _stream_pipe ]
         #ffmpeg__cmd += [ "-c", "copy", "-copyinkf" ]
         ffmpeg__cmd += [ "-vsync", "0", "-c:v", "copy" ]
@@ -1153,13 +1158,13 @@ def startplayer(afreeca_id, player):
                                #" -c copy " \
                                #" -loglevel error -bsf:v h264_mp4toannexb " \
                                #" -f mpegts %s" % (_stream_pipel)
-                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +nobuffer -xerror -i - " \
+                ffmpeg__cmd =  " ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer -xerror -i - " \
                                " -c:v copy -c:a libmp3lame -ar 44100 " \
                                " -copyts -loglevel error -bsf:v h264_mp4toannexb " \
                                " -f mpegts %s" % (_stream_pipel)
             else: # container_type == "MPEGTS"
                 ffmpeg__cmd =   "pv --rate-limit %s --wait --buffer-percent --timer --rate --bytes | " % (HLS_RATE_LIMIT)
-                ffmpeg__cmd +=  " ffmpeg -y -fflags +nobuffer -i - " \
+                ffmpeg__cmd +=  " ffmpeg -y -fflags +genpts+igndts+nobuffer -i - " \
                                 " -c:v copy -c:a libmp3lame -ar 44100 " \
                                 " -loglevel error " \
                                 " -f mpegts %s" % (_stream_pipel)
