@@ -39,7 +39,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.47ts"
+VERSION = "2.1.49"
 ACTIVE_BOTS = 4
 
 
@@ -51,6 +51,8 @@ HLS_RATE_LIMIT = "148k"
 
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
 TWITCH_V3_HEADER = { "Accept": "application/vnd.twitchtv.v3+json" }
+
+DUMMY_VIDEOS_PATH = "dummy_videos/cabac"
 
 # some enums for afreeca_database
 NICKNAME_ = 0
@@ -757,17 +759,26 @@ def stream_supervisor():
         pid_alive(mpids["stream_supervisor"]) and toggles["dummy_video_loop__on"]:
             
             global dummy_videos
+            statuses = get_statuses()
+            #print("get_statuses() " + str(statuses["status"]["afreeca_id"]))
+            if (get_statuses()[_stream_id]["status"]["afreeca_id"] != "sogoodtt"):
+                dummy_videos_path = DUMMY_VIDEOS_PATH
+            else:
+                dummy_videos_path = "dummy_videos/Sonic"
+            
+            print("dummy_videos_path = " + dummy_videos_path)
+            
             if len(dummy_videos) == 0:
-                dummy_videos = [ f for f in os.listdir("dummy_videos/ts/") \
-                                 if os.path.isfile("dummy_videos/ts/"+f) ]
-                                 #if f[-3:] == ".ts" and os.path.isfile("dummy_videos/"+f) ]
+                dummy_videos = [ f for f in os.listdir(DUMMY_VIDEOS_PATH) \
+                                 if f[-4:] == ".flv" and os.path.isfile(DUMMY_VIDEOS_PATH+"/"+f) ]
             if len(dummy_videos) == 0:
                 conn.msg("fatal error, no dummy videos found, sleeping for 8 minutes")
-                sleep(60*8)
+                time.sleep(60*8)
                 toggles["dummy_video_loop__on"] = False
                 return
             
-            dummy_videofile = "dummy_videos/ts/" + random.choice(dummy_videos)
+            dummy_videofile = DUMMY_VIDEOS_PATH + "/" + random.choice(dummy_videos)
+            
             if os.path.isfile(dummy_videofile):
                 debug_send("* using \"%s\" video file" % dummy_videofile)
             else:
@@ -793,6 +804,7 @@ def stream_supervisor():
             dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
                                     "-re -i \"" + dummy_videofile + "\" " \
                                     "-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
+                                    "-bsf:v h264_mp4toannexb " \
                                     "-f mpegts " + _stream_pipe
             
             #dummy_video_loop__cmd = "ffmpeg -y " \
@@ -935,12 +947,18 @@ def stream_supervisor():
             conn.msg("exitting stream supervisor")
             return
     
-    
+    dummy_timer = 0
     while toggles["stream_supervisor__on"]:
         if pid_alive(pids["livestreamer"]) and pid_alive(pids["dummy_video_loop"]):
+            # check for having dummy videos running for too long, !refresh after 80 seconds of running dummy videos
+            if (dummy_timer > 80):
+                on_refresh(["--quiet"])
+                dummy_timer = 0
             time.sleep(1)
+            dummy_timer += 1
         else:
             time.sleep(SUPERVISOR_INTERVAL)
+            dummy_timer = 0
         #print("-------------------------------- stream supervisor ping")
         if not pid_alive(mpids["ffmpeg"]):
             if toggles["streaming__enabled"]:
@@ -1126,7 +1144,14 @@ def on_restartstream(args):
 
 def startplayer(afreeca_id, player):
     def livestreamer(afreeca_id):
-        container_type = "FLV"
+        # checking remembered relations of muxer type to BJs
+        if (afreeca_id in remembered_MPEGTS_uSErs):
+            container_type = "MPEGTS"
+            conn.msg("using MPEGTS/hls video container format settings" + \
+                     (" (remembered)" if afreeca_id in remembered_MPEGTS_uSErs else ""))
+        else:
+            container_type = "FLV"
+        
         toggles["livestreamer__on"] = RETRY_COUNT
         while toggles["livestreamer__on"] > 0:
             if os.path.exists(_stream_rate_file):
@@ -1164,7 +1189,7 @@ def startplayer(afreeca_id, player):
                                " -f mpegts %s" % (_stream_pipel)
             else: # container_type == "MPEGTS"
                 ffmpeg__cmd =   "pv --rate-limit %s --wait --buffer-percent --timer --rate --bytes | " % (HLS_RATE_LIMIT)
-                ffmpeg__cmd +=  " ffmpeg -y -fflags +genpts+igndts+nobuffer -i - " \
+                ffmpeg__cmd +=  " ffmpeg -y -fflags +nobuffer -i - " \
                                 " -c:v copy -c:a libmp3lame -ar 44100 " \
                                 " -loglevel error " \
                                 " -f mpegts %s" % (_stream_pipel)
@@ -1176,6 +1201,8 @@ def startplayer(afreeca_id, player):
                                 #" -c copy " \
                                 #" -loglevel error " \
                                 #" -f mpegts %s" % (_stream_pipel)
+                #if (afreeca_id not in remembered_MPEGTS_uSErs):
+                    #remembered_MPEGTS_uSErs.append(afreeca_id)
             
             print("\n%s | %s\n" % (livestreamer__cmd, ffmpeg__cmd))
             
@@ -1199,12 +1226,13 @@ def startplayer(afreeca_id, player):
                 print("reconnecting to %s (%s)  [%d retries left], exit codes: %d %d" % \
                          (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
                 pv_to_devnull()
-                
                 # setting stream container type based on error codes
                 if livestreamer__exit_code == 0 and ffmpeg__exit_code == 1 and container_type != "MPEGTS":
                     conn.msg("using MPEGTS/hls video container format settings")
                     container_type = "MPEGTS"
                     toggles["livestreamer__on"] += 1
+        
+        #conn.msg("number of connection attempts exceeded limit!")
         
         # carefull here, if to keep this in loop or not, or is it needed at all?
         if pid_alive(pids["pv_to_devnull"]):
@@ -1280,19 +1308,27 @@ def startplayer(afreeca_id, player):
     toggles["voting__on"] = False
     conn.msg("switching to " + player)
     
+    needrestart = False
+    print("status = " + str(status["afreeca_id"]))
+    if (afreeca_id == "sogoodtt" and status["afreeca_id"] != afreeca_id):
+        needrestart = True
+    
     status["player"] = player
     status["afreeca_id"] = afreeca_id
     dump_status()
     on_title(["--quiet", player])
     
-    livestreamer__mprocess = Process(target=livestreamer, args=(afreeca_id,))
-    livestreamer__mprocess.start()
-    mpids["livestreamer"] = livestreamer__mprocess.pid
-    
-    # on_tldef
-    tldef__mprocess = Process(target=on_tldef, args=([player, "--quiet"],))
-    tldef__mprocess.start()
-    mpids["tldef"] = tldef__mprocess.pid
+    if needrestart:
+        on_restartstream([])
+    else:
+        livestreamer__mprocess = Process(target=livestreamer, args=(afreeca_id,))
+        livestreamer__mprocess.start()
+        mpids["livestreamer"] = livestreamer__mprocess.pid
+        
+        # on_tldef
+        tldef__mprocess = Process(target=on_tldef, args=([player, "--quiet"],))
+        tldef__mprocess.start()
+        mpids["tldef"] = tldef__mprocess.pid
 
 
 
@@ -1987,7 +2023,7 @@ def main():
     _stream_rate_file = "stream%d_input_rate" % _stream_id
     
     
-    global mpids, pids, toggles, status, voted_users, onstream_responses, addons
+    global mpids, pids, toggles, status, voted_users, onstream_responses, addons, remembered_MPEGTS_uSErs
     pids = manager.dict({ "dummy_video_loop": None, "keep_pipe": None, "keep_pipel": None, "ffmpeg": None
                         , "livestreamer": None, "pv_to_devnull": None, "pv_to_pipe": None 
                         })
@@ -2004,6 +2040,8 @@ def main():
                           })
     onstream_responses = manager.list([ False, False, False, False, False, False ])
     voted_users = manager.list([])
+    
+    remembered_MPEGTS_uSErs = manager.list([])
     
     global conn
     conn = IRCClass( TWITCH_IRC_SERVER["address"], TWITCH_IRC_SERVER["port"]
