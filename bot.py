@@ -629,7 +629,7 @@ def voting(vote_set=None):
             time.sleep(counter)
             break
     if toggles["voting__on"] == False:
-        conn.msg("voting is aborted!")
+        conn.msg("voting aborted!")
         return -1
     else:
         toggles["voting__on"] = False
