@@ -10,7 +10,7 @@ def main():
     #afreeca_api.init(print_msg, print_msg)
     afreeca_database = load_afreeca_database("afreeca_database.json")
     #choice_dicts = get_online_BJs(afreeca_database, verbose=True, broadlist_filename="test_data/broad_list_api_2.js")
-    choice_dicts = get_online_BJs(afreeca_database, verbose=False)
+    choice_dicts = get_online_BJs(afreeca_database, verbose=True)
     
     
     

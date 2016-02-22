@@ -4,6 +4,7 @@ import os
 import inspect
 from lxml import etree
 from sys import stdin
+import json
 
 url = "http://live.afreeca.com:8057/afreeca/broad_list_api.php"
 NICKNAME_ = 0
@@ -35,11 +36,11 @@ def print_online_list(online_BJs, message="streamers online: ", verbose=False):
                   (" (vods)" if "[재]" in streamer["broad_title"] else "") \
                   for streamer in online_BJs))
     else:
-        # sort by date
         print_msg("streamers online: " + ", ".join( \
                   streamer["nickname"] + " " +
                   streamer["broad_start"][-5:] + "KST " +
                   streamer["total_view_cnt"] + "v" +
+                  (" r:[" + streamer["rank"] + "]") +
                   (" (password)" if streamer["is_password"] != "N" else "") +
                   (" (vods)" if "[재]" in streamer["broad_title"] else "") \
                   for streamer in online_BJs))
@@ -54,8 +55,8 @@ def get_online_BJs(afreeca_database, verbose=False, quiet=False, tune_oom=False,
             print("%d" % 14, file=hF)
     
     print_msg("fetching online streamers list...")
-
-    if broadlist_filename is not None:
+    
+    if broadlist_filename is not None: # testing purposes?
         with open(broadlist_filename, 'r', encoding='EUC-KR', errors='ignore') as hF:
             string = hF.read()
             parsed = ast.literal_eval(string[21:-1])
@@ -89,23 +90,56 @@ def get_online_BJs(afreeca_database, verbose=False, quiet=False, tune_oom=False,
             online_BJs.append(player_info)
             #print_dbg(bj["user_id"] + " total:" + bj["total_view_cnt"] + " pc:" + bj["pc_view_cnt"] + " mobile:" + bj["m_current_view_cnt"])
     
+    # sorting by number of viewers
+    online_BJs_by_viewers = sorted(online_BJs, key=lambda s: int(s["total_view_cnt"]), reverse=True)
+    
     # sorting by afreeca rank
-    online_BJs = sorted(online_BJs, key=lambda s: int(s["rank"]))
+    online_BJs_by_rank = sorted(online_BJs, key=lambda s: int(s["rank"]))
     
     # sorting by password existence
-    online_BJs = sorted(online_BJs, key=lambda s: s["is_password"] != "N")
+    online_BJs_by_rank = sorted(online_BJs_by_rank, key=lambda s: s["is_password"] != "N")
     
     # sorting streams with vods to end of list
-    online_BJs = sorted(online_BJs, key=lambda s: ("[재]" in s["broad_title"]))
+    online_BJs_by_rank = sorted(online_BJs_by_rank, key=lambda s: ("[재]" in s["broad_title"]))
     
-    #print_dbg("players online: " + ", ".join(player["nickname"] + " " + player["rank"] for player in online_BJs))
-        
+    
+    j1 = 0
+    mixedSort = []
+    # Sorting with 2:1 weight ratio. Viewers count has weight of 2, afreeca rank has 1.
+    # Iterating by viewers count starting from the BJ with the highest count.
+    # This should guarantee that original order (viewers count order) is preserved in case of same values in later sort.
+    for bj1 in online_BJs_by_viewers:
+        j2 = 0
+        for bj2 in online_BJs_by_rank:
+            if bj1["nickname"] == bj2["nickname"]:
+                mixedSort.append({"nickname": bj1["nickname"], "value": j1 + j2})
+                break
+            else:
+                j2 = j2 + 1
+        j1 = j1 + 2
+    
+    mixedSort = sorted(mixedSort, key=lambda s: int(s["value"]))
+    print_dbg(str(mixedSort) + "\n")
+    
+    combRank_online_BJs = []
+    for place in mixedSort:
+        for bj in online_BJs:
+            if place["nickname"] == bj["nickname"]:
+                combRank_online_BJs.append(bj)
+    
+    # Sorting missing from bj_rank_low.json file BJs first.
+    with open("bj_rank_low.json", 'r') as hF:
+        bj_rank_low_list = json.load(hF)
+    final_online_BJs = sorted(combRank_online_BJs, key=lambda s: (s["nickname"] in bj_rank_low_list))
+    
+    #print("before:")
+    #print_online_list(combRank_online_BJs, verbose=verbose)
+    #print()
+    
     if not quiet:
-        print_online_list(online_BJs, verbose=verbose)
+        print_online_list(final_online_BJs, verbose=verbose)
     
-    #return frozenset(list(player["nickname"] for player in online_BJs)) # frozenset(list(..)) remains the order
-    #return list(player["nickname"] for player in online_BJs) # frozenset(list(..)) remains the order
-    return online_BJs
+    return final_online_BJs
 
 
 def isbjon(afreeca_id, quiet=False):
