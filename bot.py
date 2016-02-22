@@ -39,13 +39,13 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.49"
+VERSION = "2.1.51"
 ACTIVE_BOTS = 4
 
 
 TWITCH_POLL_INTERVAL = 14*60 # seconds
 ONLINE_LIST_INTERVAL = 1 # minutes
-SUPERVISOR_INTERVAL = 1 # seconds
+SUPERVISOR_INTERVAL = 0.5 # seconds
 MIN_INPUT_RATE = 37*1024 # kilobytes per second
 HLS_RATE_LIMIT = "148k"
 
@@ -471,14 +471,40 @@ class IRCClass(SimpleIRCClient):
     
     def msg(self, message):
         def split_and_send_string(string):
-            string_index = 0
+            splitLength = 384 - 2
+            index = 0
             while True:
-                string_index = 0
-                self.connection.privmsg(self.channel, string[:510])
-                string_index += 510
-                if (len(string) - string_index > 0):
-                    print("sleeping for 1.5 seconds after 510 characters in message")
-                    time.sleep(1.5)
+                if (len(string) - index <= splitLength):
+                    self.connection.privmsg(self.channel, string[index:])
+                    break;
+                
+                # first try to find commas in the current portion of text of length <= splitLength and split by them
+                posOfComma = string[index:index+splitLength].rfind(',')
+                # then spaces
+                posOfSpace = string[index:index+splitLength].rfind(' ')
+                
+                if posOfComma > 0:
+                    self.connection.privmsg(self.channel, string[index:index+posOfComma+1])
+                    #print(string[index:posOfComma+1])
+                    index += posOfComma + 1
+                elif posOfSpace > 0:
+                    self.connection.privmsg(self.channel, string[index:index+posOfSpace])
+                    #print(string[index:posOfSpace])
+                    index += posOfSpace
+                
+                # search for spaces at the beginning of next string portion and ignore them
+                while string[index] == ' ':
+                    index += 1
+                
+                # if no commas neither spaces found
+                if posOfComma < 0 and posOfSpace < 0:
+                    self.connection.privmsg(self.channel, string[index:index+splitLength])
+                    #print(string[index:index+splitLength])
+                    index += splitLength
+                
+                if (index < len(string)):
+                    print("sleeping for 1 second after %d characters in message", splitLength)
+                    time.sleep(1)
                 else:
                     break
         
