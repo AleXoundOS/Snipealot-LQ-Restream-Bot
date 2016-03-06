@@ -53,6 +53,7 @@ def get_online_BJs(afreeca_database, verbose=False, quiet=False, tune_oom=False,
         # as ast.literal_eval parsing process consumes a lot of memory 500+ megobytes of RAM
         with open("/proc/%d/oom_adj" % os.getpid(), 'w') as hF:
             print("%d" % 14, file=hF)
+        # but it will affect the calling process...
     
     print_msg("fetching online streamers list...")
     

@@ -15,13 +15,13 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-import json
 import sys
+import os
+import json
 import logging
 import re
-import os
 from multiprocessing import Process, Manager, active_children, Lock
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, DEVNULL
 import time
 from datetime import datetime
 import random
@@ -31,6 +31,7 @@ import signal
 import psutil
 from lxml import etree
 import requests
+from inspect import stack
 from irc.client import SimpleIRCClient
 import irc
 
@@ -44,12 +45,12 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.1.55"
+VERSION = "2.2.1"
 ACTIVE_BOTS = 4
 
 
 TWITCH_POLL_INTERVAL = 8*60 # seconds
-SUPERVISOR_INTERVAL = 1 # seconds
+SUPERVISOR_INTERVAL = 0.2 # seconds
 MIN_INPUT_RATE = 37*1024 # bytes per second
 
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
@@ -88,6 +89,7 @@ votes = {}
 voted_users = []
 addons = manager.dict({})
 dummy_videos = manager.list([])
+commercial_lastruntime = manager.list([datetime.now()])
 
 _stream_id = None
 _stream_pipe = None
@@ -105,7 +107,10 @@ help_for_commands = None
 forbidden_players = None
 
 bjStreamCarriers = manager.dict({})
-lock_pv = Lock()
+logfiledescriptor = None
+lock_dd = Lock()
+lock_logger = Lock()
+lock_commercial = Lock()
 
 def load_settings(filename):
     global STREAM, TWITCH_IRC_SERVER, RTMP_SERVER, LIVESTREAMER_OPTIONS, FFMPEG_OPTIONS, RETRY_COUNT, TEST
@@ -167,32 +172,32 @@ def latin_match(strg, search=re.compile(r'[^a-zA-Z0-9_ -.]').search):
     return not bool(search(strg))
 
 
-def debug_send(text):
-    if DEBUG == []:
-        return
-    if "logfile" in DEBUG:
-        if debug_send.logfiledescriptor is None or not os.path.isfile("log%d" % _stream_id):
-            if debug_send.logfiledescriptor is not None:
-               debug_send.logfiledescriptor.close()
-            
-            try:
-                debug_send.logfiledescriptor = open("log%d" % _stream_id, 'a')
-            except Exception as x:
-                print("exception occured while trying to open logfile: " + str(x))
-                print(text)
-                return
-        print( datetime.now().strftime("%Y-%m-%dT%H:%M:%S") + ' ' + text
-             , file=debug_send.logfiledescriptor
-             )
-        debug_send.logfiledescriptor.flush()
-    if "chat" in DEBUG:
-        if conn is not None and conn.connection.is_connected() and "stdout" not in DEBUG:
-            conn.msg("[dbg_from_chat] " + text)
-        else:
+def debug_send(text, tochat=False):
+    with lock_logger:
+        if DEBUG == []:
+            return
+        if "logfile" in DEBUG:
+            print( datetime.now().strftime("%Y-%m-%dT%H:%M:%S") + ' ' + text
+                 , file=logfiledescriptor )
+            logfiledescriptor.flush()
+        if ("chat" in DEBUG) or tochat:
+            if conn is not None and conn.connection.is_connected() and "stdout" not in DEBUG or tochat:
+                conn.msg(text)
+            #else:
+                #print("[dbg] " + text)
+        if "stdout" in DEBUG:
             print("[dbg] " + text)
-    if "stdout" in DEBUG:
-        print("[dbg] " + text)
-debug_send.logfiledescriptor = None
+
+
+def print_exception(exception, message, tochat=False):
+    if message != print_exception.last_message:
+        print_exception.last_message = message
+    else:
+        tochat = False
+    
+    debug_send( "[%d] Exception occured while %s: %s" % (sys.exc_info()[-1].tb_lineno, message, str(exception))
+              , tochat )
+print_exception.last_message = ""
 
 
 def start_multiprocess(target, args=()):
@@ -251,10 +256,8 @@ def terminate_pid_p(pids_process):
             return False
     
         pid = pids[pids_process]
-        if pids_process == "ffmpeg":
-            os.kill(pid, 15)
-        else:
-            os.killpg(pid, 15)
+        os.kill(pid, 15)
+        
     except Exception as x:
         debug_send("Exception while terminating %d pid (%s): " % (pid if pid is not None else -1, pids_process) + str(x))
         return False
@@ -279,10 +282,8 @@ def kill_pid_p(pids_process):
             return False
         
         pid = pids[pids_process]
-        if pids_process == "ffmpeg":
-            os.kill(pid, 9)
-        else:
-            os.killpg(pid, 9)
+        os.kill(pid, 9)
+        
     except Exception as x:
         #debug_send("Exception while killing %d pid:" + str(x) % pid)
         debug_send("Exception while killing %d pid (%s): " % (pid, pids_process) + str(x))
@@ -300,33 +301,42 @@ def kill_pid_p(pids_process):
     else:
         return True
 
-def close_pid_p_gradually(pids_process):
-    if pids_process not in pids or pids[pids_process] is None:
-        debug_send("error, process [%s] is None" % pids_process)
+def close_pid_p_gradually(process_name):
+    if process_name not in pids or pids[process_name] is None:
+        debug_send("error, process [%s] is None" % process_name)
         return False
     
-    pid = pids[pids_process]
-    
-    if not pid_alive(pid):
-        #conn.msg("warning, process [%s] not alive" % (pids_process))
+    if not psutil.pid_exists(pids[process_name]):
         return True
     
-    for sig in [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]:
-        try:
-            os.killpg(pid, sig)
-        except Exception as x:
-            debug_send("Exception while sending %s to %d pid (%s) (%s): " % (str(sig), pid, pids_process, psutil.pid_exists(pid)) + str(x))
-            return False
-        
-        # waiting for process to close for 1 second
-        for i in range(60):
-            if i != 0:
-                time.sleep(0.1)
-            if not pid_alive(pid):
-                debug_send("closed [%s] process with %s signal" % (pids_process, str(sig)))
+    try:
+        p = psutil.Process(pids[process_name])
+        for method in {p.terminate, p.kill}:
+            if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
+                method()
+            else:
+                p.wait(timeout=0)
+                if p.status() == psutil.STATUS_ZOMBIE:
+                    debug_send("%s: warning process \"%s\" is zombie" % (stack()[1][3], process_name), tochat=True)
                 return True
-        
-        debug_send("warning, process is still alive after sending %s [%s] process" % (str(sig), pids_process))
+            
+            # waiting for process to close
+            for i in range(10):
+                if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
+                    if i != 0:
+                        print("0.1")
+                        time.sleep(0.1)
+                else:
+                    p.wait(timeout=0)
+                    if p.status() == psutil.STATUS_ZOMBIE:
+                        debug_send("%s: warning process \"%s\" is zombie" % (stack()[1][3], process_name), tochat=True)
+                    return True
+            
+            debug_send( "%s: warning, process is still alive after method %s at [%s] process"
+                      % (stack()[1][3], str(method), process_name) )
+    except Exception as x:
+        print_exception(x, "%s: closing %s" % (stack()[1][3], process_name))
+        return False
     
     return False
 
@@ -413,7 +423,7 @@ class IRCClass(SimpleIRCClient):
     
     def on_disconnect(self, connection, event):
         debug_send("\ndisconnected from %s\n" % connection.server)
-        time.sleep(10)
+        time.sleep(2)
         if not self.connection.is_connected():
             #on_switch_irc([])
             #if len(args) > 0:
@@ -511,7 +521,10 @@ class IRCClass(SimpleIRCClient):
             index = 0
             while True:
                 if (len(string) - index <= splitLength):
-                    self.connection.privmsg(self.channel, string[index:])
+                    try:
+                        self.connection.privmsg(self.channel, string[index:])
+                    except Exception as x:
+                        print_exception(x, "sending privmsg")
                     break;
                 
                 # first try to find commas in the current portion of text of length <= splitLength and split by them
@@ -576,7 +589,10 @@ def on_onstream(request_channel):
                 time.sleep(0.1)
     
     onstream_value = status["player"]
-    if status["player"] != "[idle]" and not pid_alive(pids["cat_to_pipe"]): # rework!
+    if  status["player"] != "[idle]" \
+    and pids["dd_to_pipe"] is not None \
+    and psutil.pid_exists(pids["dd_to_pipe"]) \
+    and psutil.Process(pids["dd_to_pipe"]).status == psutil.STATUS_STOPPED:
         if RETRY_COUNT - toggles["livestreamer__on"] > 1:
             onstream_value = "reconnecting to " + status["player"]
         else:
@@ -584,8 +600,7 @@ def on_onstream(request_channel):
     
     # (ommiting '#' character from channel string, when composing twitch link)
     conn.connection.privmsg( request_channel
-                           , "twitch.tv/%-10s   %s" % (STREAM[_stream_id]["channel"][1:], onstream_value)
-                           )
+                           , "twitch.tv/%-10s   %s" % (STREAM[_stream_id]["channel"][1:], onstream_value) )
 
 
 def on_help(args):
@@ -796,7 +811,7 @@ def stream_supervisor():
                     else:
                         #conn.msg("no votes received, picking random streamer")
                         conn.msg( "no votes received, randomly picking one of the two BJs " +
-                                  "with highest afreeca rank available online" )
+                                  "with highest viewers count and afreeca rank available online" )
                         on_setplayer([random.choice([bj["nickname"] for bj in choice_dicts][:2])])
     
     autoswitch.waitcounter = AUTOSWITCH_START_DELAY
@@ -819,8 +834,6 @@ def stream_supervisor():
         while pid_alive(pids["ffmpeg"]) and pid_alive(mpids["ffmpeg"]) and \
         pid_alive(mpids["stream_supervisor"]) and toggles["dummy_video_loop__on"]:
             global dummy_videos
-            #statuses = get_statuses()
-            #print("get_statuses() " + str(statuses["status"]["afreeca_id"]))
             dummy_videos_path = DUMMY_VIDEOS_PATH
             
             if len(dummy_videos) == 0:
@@ -872,7 +885,7 @@ def stream_supervisor():
             debug_send(dummy_video_loop__cmd)
             dummy_video_loop__process = Popen(dummy_video_loop__cmd.split(), shell=False)
             pids["dummy_video_loop"] = dummy_video_loop__process.pid
-            dummy_video_loop__process.wait()
+            debug_send("dummy_video_loop exited with code %d" % dummy_video_loop__process.wait())
         #toggles["dummy_video_loop__on"] = False
     #def dummy_video_loop():
     
@@ -897,26 +910,21 @@ def stream_supervisor():
     antispam.lastmsglist = []
     antispam.blocktime = datetime.fromtimestamp(0)
     
-    def dummy_video_supervisor():
+    def dummy_video_supervisor(p_dds):
         def start_dummy_video():
             toggles["dummy_video_loop__on"] = True
             dummy_video_loop__mprocess = Process(target=dummy_video_loop)
             dummy_video_loop__mprocess.start()
             mpids["dummy_video_loop"] = dummy_video_loop__mprocess.pid
             debug_send("dummy_video_loop mprocess started")
-        #def start_dummy_video():
         
-        if not os.path.isfile(_stream_rate_file) or not pid_alive(mpids["livestreamer"]):
-            #print("input rate file doesn't exist")
-            if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]):
-                # turn on dummy video
-                start_dummy_video()
-        elif pid_alive(pids["livestreamer"]):
+        if pid_alive(pids["livestreamer"]) and os.path.exists(_stream_rate_file):
             try:
                 try:
                     hF = open(_stream_rate_file, 'r')
                 except Exception as x:
                     debug_send("cannot open input rate file: " + str(x))
+                    hF.close()
                     return
                 
                 inside_digits = False
@@ -960,43 +968,24 @@ def stream_supervisor():
             
             except Exception as x:
                 debug_send("exception occurred while reading input rate file: [%d] %s" % (sys.exc_info()[-1].tb_lineno, str(x)))
+                hF.close()
                 toggles["dummy_video_loop__on"] = False
-                if pid_alive(pids["livestreamer"]):
-                    cat_to_buffer()
-                return
+                rate = 0
             
-            if rate < MIN_INPUT_RATE:
-                cat_to_buffer()
-                #if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]) and \
-                #not toggles["dummy_video_loop__on"]:
-                if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]):
-                    start_multiprocess(commercial, args=(30,))
-                    start_dummy_video()
-                
-                ## resume dummy video playback (into twitch ffmpeg)
-                # if dummy_video_loop process exists
-                if pids["dummy_video_loop"] is not None and psutil.pid_exists(pids["dummy_video_loop"]):
-                    p_dvl = psutil.Process(pids["dummy_video_loop"])
-                    
-                    # if it's suspended
-                    if p_dvl.status() == psutil.STATUS_STOPPED:
-                        # resume it
-                        debug_send("resuming p_dvl")
-                        p_dvl.resume()
-                        
-                        if antispam():
-                            conn.msg("(afreeca is not responding, starting dummy video)")
-                    else:
-                        debug_send("p_dvl.status() = " + p_dvl.status())
-            
-            else: # if input rate is sufficient
+            if rate >= MIN_INPUT_RATE:
+            # if input rate is sufficient
                 ## suspend dummy video playback (into twitch ffmpeg)
                 if pids["dummy_video_loop"] is not None and psutil.pid_exists(pids["dummy_video_loop"]):
-                    p_dvl = psutil.Process(pids["dummy_video_loop"])
+                    try:
+                        p_dvl = psutil.Process(pids["dummy_video_loop"])
+                    except Exception as x:
+                        debug_send("Exception2: Process(p_dvl): " + str(x))
+                        return
                     
                     # if it's not suspended
                     if p_dvl.status() != psutil.STATUS_STOPPED:
-                        debug_send("p_dvl.status() = " + p_dvl.status())
+                        #debug_send("p_dvl.status() = " + p_dvl.status())
+                        start_multiprocess(commercial, args=(30,))
                         
                         # suspend it
                         debug_send("suspending p_dvl")
@@ -1005,9 +994,40 @@ def stream_supervisor():
                         if antispam(just_check=True):
                             conn.msg("(afreeca started sending stream data, stopping dummy video)")
                 
-                cat_to_pipe()
-        #elif pid_alive(pids["livestreamer"]):
-    #def dummy_video_supervisor():
+                dd_to_pipe(p_dds)
+                return
+        
+        # disconnect livestreamer from twitch ffmpeg
+        dd_to_buffer(p_dds)
+        
+        #if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]):
+        if not pid_alive(mpids["dummy_video_loop"]):
+            # turn on dummy video
+            start_dummy_video()
+        
+        ## resume dummy video playback (into twitch ffmpeg)
+        # if dummy_video_loop process exists
+        elif pids["dummy_video_loop"] is not None and psutil.pid_exists(pids["dummy_video_loop"]):
+            try:
+                p_dvl = psutil.Process(pids["dummy_video_loop"])
+            except Exception as x:
+                debug_send("Exception1: Process(p_dvl): " + str(x))
+                return
+            
+            # if it's suspended
+            if p_dvl.status() == psutil.STATUS_STOPPED:
+                # resume it
+                debug_send("resuming p_dvl")
+                p_dvl.resume()
+                
+                if antispam():
+                    conn.msg("(afreeca is not responding, starting dummy video)")
+            #else:
+                #debug_send("p_dvl.status() = " + p_dvl.status())
+        elif not psutil.pid_exists(pids["ffmpeg"]):
+            debug_send("dummy_video_loop does not exist, is it ok? (while twitch ffmpeg is not running)")
+        #if pid_alive(pids["livestreamer"]) and os.path.exists(_stream_rate_file):
+    #def dummy_video_supervisor(p_dds):
     
     # check if all dummy videos exist
     for videofile_relpath in ["dummy_videos/"+videofile for videofile in dummy_videos]:
@@ -1018,21 +1038,31 @@ def stream_supervisor():
                 return
         except Exception as x:
             conn.msg("exception occured while looking for dummy videos: " + str(x))
-            conn.msg("exitting stream supervisor")
+            conn.msg("exiting stream supervisor")
             return
+    
+    p_dds = {"dd_to_buffer": None, "dd_to_pipe": None}
     
     dummy_timer = 0
     while toggles["stream_supervisor__on"]:
-        if pid_alive(pids["livestreamer"]) and pid_alive(pids["dummy_video_loop"]):
-            # check for having dummy videos running for too long, !refresh after 140 seconds of running dummy videos
-            if (dummy_timer > 140):
-                on_refresh(["--quiet"])
-                dummy_timer = 0
-            time.sleep(SUPERVISOR_INTERVAL)
-            dummy_timer += SUPERVISOR_INTERVAL
+        if pid_alive(pids["livestreamer"]):
+            if psutil.pid_exists(pids["dummy_video_loop"]):
+                try:
+                    p_dvl = psutil.Process(pids["dummy_video_loop"])
+                except Exception as x:
+                    debug_send("supervisor loop: Process(dvl): " + str(x), tochat=True)
+                
+                if p_dvl.status() != psutil.STATUS_STOPPED:
+                    # check for having dummy videos running for too long, !refresh after 140s of running dummy videos
+                    if (dummy_timer > 140):
+                        on_refresh(["--quiet"])
+                        dummy_timer = 0
+                    else:
+                        dummy_timer += SUPERVISOR_INTERVAL
         else:
-            time.sleep(SUPERVISOR_INTERVAL)
             dummy_timer = 0
+        
+        time.sleep(SUPERVISOR_INTERVAL)
         #print("-------------------------------- stream supervisor ping")
         if not pid_alive(mpids["ffmpeg"]):
             if toggles["streaming__enabled"]:
@@ -1051,17 +1081,17 @@ def stream_supervisor():
                 if not twitch_stream_online_supervisor():
                     continue
             except Exception as x:
-                conn.msg("warning, exception occurred while running twitch_stream_online_supervisor(): " + str(x))
+                print_exception(x, "running twitch_stream_online_supervisor", tochat=True)
             
             try:
-                dummy_video_supervisor()
+                dummy_video_supervisor(p_dds)
             except Exception as x:
-                conn.msg("warning, exception occurred while running dummy_video_supervisor(): " + str(x))
+                print_exception(x, "running dummy_video_supervisor", tochat=True)
             
             try:
                 autoswitch()
             except Exception as x:
-                conn.msg("warning, exception occurred while running autoswitch(): " + str(x))
+                print_exception(x, "running autoswitch", tochat=True)
                 autoswitch.waitcounter = AUTOSWITCH_START_DELAY
     #while toggles["stream_supervisor__on"]:
 
@@ -1119,7 +1149,11 @@ def on_startstream(args):
     def ffmpeg():
         conn.msg("launching ffmpeg...")
         
-        keep_pipe(_stream_pipe)
+        p_pipe = maintain_pipe(_stream_pipe)
+        p_pipel = maintain_pipe(_stream_pipel)
+        
+        if p_pipe == None or p_pipel == None:
+            debug_send("p_pipe = %s, p_pipel = %s" % (str(p_pipe), str(p_pipel)), tochat=True)
         
         # starting ffmpeg to stream from pipe
         #ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
@@ -1135,16 +1169,18 @@ def on_startstream(args):
         #ffmpeg__cmd += [ "-bsf:a", "aac_adtstoasc", "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
         # Popen(, cwd="folder")
         debug_send("\n%s\n" % ' '.join(ffmpeg__cmd))
-        ffmpeg__process = Popen(ffmpeg__cmd, preexec_fn=os.setsid)
+        ffmpeg__process = Popen(ffmpeg__cmd)
         pids["ffmpeg"] = ffmpeg__process.pid
         ffmpeg__exit_code = ffmpeg__process.wait()
         
-        if pid_alive(pids["keep_pipe"]):
-            close_pid_p_gradually("keep_pipe")
-        if pid_alive(pids["keep_pipel"]):
-            close_pid_p_gradually("keep_pipel")
+        debug_send("streaming to twitch ended with code %d" % ffmpeg__exit_code, tochat=True)
         
-        debug_send("streaming to twitch ended with code " + str(ffmpeg__exit_code))
+        close_pid_p_gradually("keep_%s" % _stream_pipe)
+        close_pid_p_gradually("keep_%s" % _stream_pipel)
+        
+        #p_pipe.wait()
+        #p_pipel.wait()
+        
     
     
     # check if pipe file exists&valid or create a new one
@@ -1225,24 +1261,28 @@ def startplayer(afreeca_id, player):
             global LivestreamerObject
             LivestreamerObject = Livestreamer() # doing this every time a new BJ is requested saves memory (a lot!)
             streamsForBJ = LivestreamerObject.streams("afreeca.com/" + afreeca_id)
-            if "best" in streamsForBJ:
-                if isinstance(streamsForBJ["best"], RTMPStream):
-                    debug_send("{%s: %s} -> %s" % (afreeca_id, "RTMP", str(bjStreamCarriers)))
-                    conn.msg("remembering %s carrier for %s" % ("RTMP", player))
-                    bjStreamCarriers[afreeca_id] = "RTMP"
-                elif isinstance(streamsForBJ["best"], HLSStream):
-                    debug_send("{%s: %s} -> %s" % (afreeca_id, "HLS", str(bjStreamCarriers)))
-                    conn.msg("remembering %s carrier for %s" % ("HLS", player))
-                    bjStreamCarriers[afreeca_id] = "HLS"
+            if streamsForBJ:
+                if "best" in streamsForBJ:
+                    if isinstance(streamsForBJ["best"], RTMPStream):
+                        #debug_send("{%s: %s} -> %s" % (afreeca_id, "RTMP", str(bjStreamCarriers)))
+                        conn.msg("remembering %s carrier for %s" % ("RTMP", player))
+                        bjStreamCarriers[afreeca_id] = "RTMP"
+                    elif isinstance(streamsForBJ["best"], HLSStream):
+                        #debug_send("{%s: %s} -> %s" % (afreeca_id, "HLS", str(bjStreamCarriers)))
+                        conn.msg("remembering %s carrier for %s" % ("HLS", player))
+                        bjStreamCarriers[afreeca_id] = "HLS"
+                    else:
+                        conn.msg("there is no acceptable stream! (no RTMP, no HLS)")
+                        return
                 else:
-                    conn.msg("there is no acceptable stream! (no RTMP, no HLS)")
-                    return
+                    conn.msg("there is no acceptable stream! (no best)")
+                    return -1
             else:
-                conn.msg("there is no acceptable stream! (no best)")
-                return
-        else:
-            debug_send("livestreamer mprocess: using remembered %s carrier for %s (%s)"
-                       % (bjStreamCarriers[afreeca_id], player, afreeca_id))
+                conn.msg("%s does not have any stream online" % player)
+                return -1
+        #else:
+            #debug_send("livestreamer mprocess: using remembered %s carrier for %s (%s)"
+                       #% (bjStreamCarriers[afreeca_id], player, afreeca_id))
         
         livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS) # adding options from settings file
         livestreamer__cmd += " afreeca.com/%s best -O" % (afreeca_id)
@@ -1257,7 +1297,6 @@ def startplayer(afreeca_id, player):
             #ffmpeg__cmd =   "pv --rate-limit %s --wait --average-rate --timer --rate --bytes | " % (HLS_RATE_LIMIT)
             ffmpeg__cmd =  "ffmpeg -y -re -i - " \
                            "-c:v copy -c:a libmp3lame -ar 44100 " \
-                           "-loglevel error " \
                            "-f mpegts -"
         else:
             conn.msg("unknown stream carrier in bjStreamCarriers!")
@@ -1269,43 +1308,41 @@ def startplayer(afreeca_id, player):
         # ffmpeg, livestreamer and pv commands are ready for now, print them
         debug_send("\n%s\n| %s\n| %s\n" % (livestreamer__cmd, ffmpeg__cmd, pv__cmd))
         
+        # removing stream rate file if exists
+        if os.path.exists(_stream_rate_file):
+            try:
+                os.remove(_stream_rate_file)
+            except Exception as x:
+                debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
+        
         toggles["livestreamer__on"] = RETRY_COUNT
         #while toggles["livestreamer__on"] > 0:
         while toggles["livestreamer__on"] > 0 and isbjon(afreeca_id, quiet=True):
-            # removing stream rate file if exists (what for?)
-            if os.path.exists(_stream_rate_file):
-                try:
-                    os.remove(_stream_rate_file)
-                except Exception as x:
-                    debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
-            
-            # omg (it could be obviously done in a different manner)
-            keep_pipe(_stream_pipel)
-            cat_to_buffer()
-            
             # checking if stream pipe file (pipe?l) exists and is a pipe
             try:
                 if not stat.S_ISFIFO(os.stat(_stream_pipel).st_mode):
-                    conn.msg("error, stream pipe file is invalid (pipel)")
+                    debug_send("error, stream pipe file is invalid (pipel), maybe try !restartbot", tochat=True)
                     return
             except Exception as x:
                 conn.msg(str(x))
                 return
+            
+            #l_ffmpeg_log_file = open("l_ffmpeg_log%d" % _stream_id, 'a')
             
             # creating livestreamer process that outputs to a pipe
             livestreamer__process = Popen(livestreamer__cmd.split(), stdout=PIPE, shell=False)
             pids["livestreamer"] = livestreamer__process.pid # adding it's pid to global dictionary
             
             # creating ffmpeg process that gets input from livestreamer and outputs to stdout
-            ffmpeg__process = Popen(ffmpeg__cmd.split(), stdin=livestreamer__process.stdout, stdout=PIPE, shell=False)
+            ffmpeg__process = Popen(ffmpeg__cmd.split(), stdin=livestreamer__process.stdout, stdout=PIPE, stderr=DEVNULL, shell=False)
             pids["l_ffmpeg"] = ffmpeg__process.pid # adding it's pid to global dictionary
             
             # creating pv process that gets input from ffmpeg
-            pv__process = Popen(pv__cmd, stdin=ffmpeg__process.stdout, preexec_fn=os.setsid, shell=True)
+            pv__process = Popen("exec " + pv__cmd, stdin=ffmpeg__process.stdout, shell=True)
             pids["pv"] = pv__process.pid # adding it's pid to global dictionary
             
             livestreamer__process.stdout.close() # dunno
-            #ffmpeg__process.communicate()        # interconnects livestreamer with ffmpeg through a pipe
+            ##ffmpeg__process.communicate()        # interconnects livestreamer with ffmpeg through a pipe
             ffmpeg__process.stdout.close() # dunno
             pv__process.communicate()        # interconnects ffmpeg with pv through a pipe
             
@@ -1313,24 +1350,26 @@ def startplayer(afreeca_id, player):
             ffmpeg__exit_code = ffmpeg__process.wait()             # waiting process to exit and it's exit code
             pv__exit_code = pv__process.wait()                     # waiting process to exit and it's exit code
             
+            #l_ffmpeg_log_file.close()
+            
+            # removing stream rate file so that dummy video supervisor knows that pv is not running
+            if os.path.exists(_stream_rate_file):
+                try:
+                    os.remove(_stream_rate_file)
+                except Exception as x:
+                    debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
+            
             toggles["livestreamer__on"] -= 1 # once they both exited, decrement remaining retries count
             
             debug_send( "livestreamer__exit_code = %d, ffmpeg__exit_code = %d, pv__exit_code = %d" \
                       % (livestreamer__exit_code, ffmpeg__exit_code, pv__exit_code))
-            if (ffmpeg__exit_code == -13):
-                conn.msg("ffmpeg exited with code %d" % ffmpeg__exit_code)
             
             if toggles["livestreamer__on"] > 0:
                 debug_send("reconnecting to %s (%s)  [%d retries left], exit codes: %d %d" % \
                          (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
         #end toggles["livestreamer__on"] > 0:
         
-        # removing stream rate file if exists (it can be non-existent, i.e. ffmpeg process failed to start)
-        if os.path.exists(_stream_rate_file):
-            try:
-                os.remove(_stream_rate_file)
-            except Exception as x:
-                debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
+        #maintain_pipel()
         
         # WTF. Why livestreamer's function should set all this crap?
         status["player"] = "[idle]"
@@ -1352,7 +1391,7 @@ def startplayer(afreeca_id, player):
         start_multiprocess(commercial, args=(30,))
         
         # checking exit codes of livestreamer and ffmpeg processes (doubtful interpretation)
-        if livestreamer__exit_code == 1 and ffmpeg__exit_code == 1:
+        if livestreamer__exit_code == 1: # and ffmpeg__exit_code == 1:
             conn.msg("afreeca stream appears to be offline, inaccessible or has incompatible stream container")
         #elif livestreamer__exit_code == 0 and ffmpeg__exit_code == 1:
             #conn.msg("afreeca stream has incompatible stream container")
@@ -1374,34 +1413,10 @@ def startplayer(afreeca_id, player):
         conn.msg("error, streaming to twitch is not running")
         return True
     
-    
-    # check if pipe file exists&valid or create a new one
-    if not os.path.exists(_stream_pipel):
-        debug_send("streaming pipe doesn't exist, attempting to create one")
-        try:
-            os.mkfifo(_stream_pipel)
-        except Exception as x:
-            conn.msg("error, could not create a pipe for streaming processes: " + str(x))
-            return
-        else:
-            debug_send("created a new pipe, filename: " + _stream_pipel)
-    elif not stat.S_ISFIFO(os.stat(_stream_pipel).st_mode):
-        conn.msg("file \"%s\" is not a pipe, replacing" % _stream_pipel)
-        try:
-            os.remove(_stream_pipel)
-            os.mkfifo(_stream_pipel)
-        except Exception as x:
-            conn.msg("error, could not create a pipe for streaming processes: " + str(x))
-            return
-        else:
-            debug_send("created a new pipe, filename: " + _stream_pipel)
-        
-    
     toggles["voting__on"] = False
     conn.msg("switching to " + player)
     
     #needrestart = False
-    print("status = " + str(status["afreeca_id"]))
     #if (afreeca_id == "sogoodtt" and status["afreeca_id"] != afreeca_id):
         #needrestart = True
     
@@ -1436,15 +1451,6 @@ def on_stopplayer(args):
             counter -= 1
             time.sleep(0.1)
         
-        
-        #if pid_alive(pids["livestreamer"]) or pid_alive(pids["l_ffmpeg"]):
-            #if pid_alive(pids["livestreamer"]):
-                #if not terminate_pid_p("livestreamer"):
-                    #debug_send("couldn't terminate livestreamer process, killing")
-                    #kill_pid_p("livestreamer")
-            
-        
-        
         while ( pid_alive(pids["livestreamer"]) or pid_alive(pids["l_ffmpeg"]) or pid_alive(pids["l_ffmpeg"]) or \
                 pid_alive(mpids["livestreamer"]) ):
             toggles["livestreamer__on"] = 0
@@ -1453,153 +1459,124 @@ def on_stopplayer(args):
             close_pid_p_gradually("pv")
             toggles["livestreamer__on"] = 0
             time.sleep(1)
-            
-            #counter = 40
-            #while pid_alive(mpids["livestreamer"]) and counter >= 0:
-                #counter -= 1
-                #time.sleep(0.3)
-            
-            #if not pid_alive(mpids["livestreamer"]):
-                #time.sleep(0.1)
-                ##conn.msg("afreeca playback stopped")
-            #else:
-                #debug_send("error, [livestreamer] mprocess is still running, waiting")
-                #timer = 0
-                #while pid_alive(mpids["livestreamer"]) and timer < 60:
-                    #time.sleep(0.5)
-                    #timer += 0.5
-                    #conn.msg("error, [livestreamer] mprocess is still running after 60s of waiting")
-                    #debug_send("error, [livestreamer] mprocess is still running after 60s of waiting")
-                    #return -1
-                #conn.msg("[livestreamer] mprocess stopped")
-                #debug_send("[livestreamer] mprocess stopped")
-            
-        #else:
-            ##debug_send("fatal error, livestreamer internal process exists without external one")
-            #conn.msg("fatal error, livestreamer internal process exists without external one, try !restartbot")
     else:
         conn.msg("error, afreeca playback is not running")
 
 
-def keep_pipe(pipe):
-    if pipe == _stream_pipe:
-        # pipe for ffmpeg to read from
-        if not pid_alive(pids["keep_pipe"]):
-            keep_pipe__process = Popen("cat > " + pipe, preexec_fn=os.setsid, shell=True)
-            pids["keep_pipe"] = keep_pipe__process.pid
-    elif pipe == _stream_pipel:
-        # pipe for livestreamer to send to
-        if not pid_alive(pids["keep_pipel"]):
-            keep_pipel__process = Popen("cat > " + pipe, preexec_fn=os.setsid, shell=True)
-            pids["keep_pipel"] = keep_pipel__process.pid
-    else:
-        debug_send("script error, invalid pipe name: " + pipe)
-
-
-def cat_to_buffer():
-    with lock_pv:
-        ## suspend existing cat_to_pipe
-        if pids["cat_to_pipe"] is not None and psutil.pid_exists(pids["cat_to_pipe"]):
-            try:
-                # suspend "cat" child process in it
-                p_shell = psutil.Process(pids["cat_to_pipe"])
-                p_cat = [p_child for p_child in p_shell.children(recursive=True) if p_child.name() == "cat"]
-                if p_cat:
-                    if p_cat[0].status() != psutil.STATUS_STOPPED:
-                        debug_send("cat_to_buffer: cat status from \"cat_to_pipe\" = " + p_cat[0].status())
-                        debug_send("cat_to_buffer: suspend cat from \"cat_to_pipe\"")
-                        p_cat[0].suspend()
-                else:
-                    debug_send("cat_to_buffer: alert \"cat\" process not found in \"cat_to_pipe\"")
-                    close_pid_p_gradually(pids["cat_to_pipe"])
-            except Exception as x:
-                conn.msg("cat_to_buffer: (about \"cat_to_pipe\"): " + str(x))
-                debug_send("cat_to_buffer: (about \"cat_to_pipe\"): " + str(x))
+def maintain_pipe(pipe_name):
+    # check if pipe file exists&valid or create a new one
+    if not os.path.exists(pipe_name):
+        debug_send("streaming pipe doesn't exist, attempting to create one")
+        try:
+            os.mkfifo(pipe_name)
+        except Exception as x:
+            conn.msg("error, could not mkfifo %s for streaming processes: %s" % (pipe_name, str(x)))
+            return -1
         else:
-            debug_send("cat_to_buffer: \"cat_to_pipe\" is None or non-existent")
-        
-        # if cat_to_pipe exists
-        if pids["cat_to_buffer"] is not None and psutil.pid_exists(pids["cat_to_buffer"]): # candidate for zombie?
-            try:
-                # resume existing "cat" in it
-                p_shell = psutil.Process(pids["cat_to_buffer"])
-                p_cat = [p_child for p_child in p_shell.children(recursive=True) if p_child.name() == "cat"]
-                if p_cat:
-                    if p_cat[0].status() == psutil.STATUS_STOPPED:
-                        debug_send("cat_to_buffer: resume cat from \"cat_to_buffer\"")
-                        p_cat[0].resume()
-                    else:
-                        debug_send("cat_to_buffer: cat status from \"cat_to_buffer\" = " + p_cat[0].status())
-                else:
-                    debug_send("cat_to_buffer: alert \"cat\" process not found in \"cat_to_buffer\"")
-                    close_pid_p_gradually(pids["cat_to_buffer"])
-            except Exception as x:
-                conn.msg("cat_to_buffer: (about \"cat_to_buffer\"): " + str(x))
-                debug_send("cat_to_buffer: (about \"cat_to_buffer\"): " + str(x))
-        else: # in case cat_to_buffer hasn't been spawned
-            ## spawn new cat_to_buffer process
-            ## with --hls-live-edge = 1 ?
-            cat_to_buffer__cmd = "cat %s > %s" % (_stream_pipel, _stream_buffer_file)
-            cat_to_buffer__process = Popen(cat_to_buffer__cmd, preexec_fn=os.setsid, shell=True)
-            pids["cat_to_buffer"] = cat_to_buffer__process.pid
-            debug_send("$$$$(Popen)$$$$$  cat_to_buffer $$$$$$(%d)$$$$$" % cat_to_buffer__process.pid)
-
-def cat_to_pipe():
-    with lock_pv:
-        ## suspend existing cat_to_pipe
-        if pids["cat_to_buffer"] is not None and psutil.pid_exists(pids["cat_to_buffer"]):
-            try:
-                # suspend "cat" child process in it
-                p_shell = psutil.Process(pids["cat_to_buffer"])
-                p_cat = [p_child for p_child in p_shell.children(recursive=True) if p_child.name() == "cat"]
-                if p_cat:
-                    if p_cat[0].status() != psutil.STATUS_STOPPED:
-                        debug_send("cat_to_pipe: cat status from \"cat_to_buffer\" = " + p_cat[0].status())
-                        debug_send("cat_to_pipe: suspend cat from \"cat_to_buffer\"")
-                        p_cat[0].suspend()
-                else:
-                    debug_send("cat_to_pipe: alert \"cat\" process not found in \"cat_to_buffer\"")
-                    close_pid_p_gradually(pids["cat_to_buffer"])
-            except Exception as x:
-                conn.msg("cat_to_pipe: (about \"cat_to_buffer\"): %s" + str(x))
-                debug_send("cat_to_pipe: (about \"cat_to_buffer\"): %s" + str(x))
+            debug_send("created a new pipe, filename: " + pipe_name)
+    elif not stat.S_ISFIFO(os.stat(pipe_name).st_mode):
+        conn.msg("file \"%s\" is not a pipe, replacing" % pipe_name)
+        try:
+            os.remove(pipe_name)
+            os.mkfifo(pipe_name)
+        except Exception as x:
+            conn.msg("error, could not mkfifo %s for streaming processes: %s" % (pipe_name, str(x)))
+            return -1
         else:
-            debug_send("cat_to_pipe: \"cat_to_buffer\" is None or non-existent")
-        
-        # if cat_to_pipe exists
-        if pids["cat_to_pipe"] is not None and psutil.pid_exists(pids["cat_to_pipe"]): # candidate for zombie?
-            try:
-                # resume existing "cat" in it
-                p_shell = psutil.Process(pids["cat_to_pipe"])
-                p_cat = [p_child for p_child in p_shell.children(recursive=True) if p_child.name() == "cat"]
-                if p_cat:
-                    if p_cat[0].status() == psutil.STATUS_STOPPED:
-                        debug_send("cat_to_pipe: resume cat from \"cat_to_pipe\"")
-                        p_cat[0].resume()
-                        toggles["livestreamer__on"] = RETRY_COUNT
-                    else:
-                        debug_send("cat_to_pipe: cat status from \"cat_to_pipe\" = " + p_cat[0].status())
-                else:
-                    debug_send("cat_to_pipe: alert \"cat\" process not found in \"cat_to_pipe\"")
-                    close_pid_p_gradually(pids["cat_to_pipe"])
-            except Exception as x:
-                conn.msg("cat_to_pipe: (about \"cat_to_pipe\"): " + str(x))
-                debug_send("cat_to_pipe: (about \"cat_to_pipe\"): " + str(x))
-        else: # in case cat_to_pipe hasn't been spawned
-            try:
-                if not stat.S_ISFIFO(os.stat(_stream_pipe).st_mode):
-                    conn.msg("error, stream pipe file is invalid")
-                    return
-            except Exception as x:
-                conn.msg(str(x))
-                return
+            debug_send("created a new pipe, filename: " + pipe_name)
     
-            ## spawn new cat_to_pipe process
-            #cat_to_pipe__cmd = "cat %s %s > %s" % (_stream_buffer_file, _stream_pipel, _stream_pipe)
-            cat_to_pipe__cmd = "cat %s > %s" % (_stream_pipel, _stream_pipe)
-            cat_to_pipe__process = Popen(cat_to_pipe__cmd, preexec_fn=os.setsid, shell=True)
-            pids["cat_to_pipe"] = cat_to_pipe__process.pid
-            debug_send("****(Popen)**** cat_to_pipe ******(%d)******" % cat_to_pipe__process.pid)
+    keep_pipe__process = Popen(("dd of=" + pipe_name).split())
+    pids["keep_%s" % pipe_name] = keep_pipe__process.pid
+    
+    return keep_pipe__process
+
+
+def dd_to_buffer(p):
+    with lock_dd:
+        if p["dd_to_pipe"] is not None:
+            ## suspend existing dd to pipe
+            if p["dd_to_pipe"].is_running():
+                try:
+                    # suspend dd to pipe
+                    #debug_send("dd_to_buffer: \"dd_to_pipe\" status = " + p["dd_to_pipe"].status())
+                    if p["dd_to_pipe"].status() != psutil.STATUS_STOPPED:
+                        debug_send("dd_to_buffer: suspend \"dd_to_pipe\"")
+                        os.kill(p["dd_to_pipe"].pid, signal.SIGTSTP)
+                        #p["dd_to_pipe"].suspend()
+                except Exception as x:
+                    debug_send("dd_to_buffer: (about \"dd_to_pipe\"): " + str(x), tochat=True)
+            else:
+                debug_send("dd_to_buffer: \"dd_to_pipe\" is not running")
+        
+        # if dd_to_buffer exists
+        if p["dd_to_buffer"] is not None and p["dd_to_buffer"].is_running():
+            try:
+                # resume existing dd to pipe
+                #debug_send("dd_to_buffer: \"dd_to_buffer\" status = " + p_dd.status())
+                if p["dd_to_buffer"].status() == psutil.STATUS_STOPPED:
+                    debug_send("dd_to_buffer: resume \"dd_to_buffer\"")
+                    os.kill(p["dd_to_buffer"].pid, signal.SIGCONT)
+                    #p["dd_to_buffer"].resume()
+                    return
+                elif p["dd_to_buffer"].status() in {psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_DISK_SLEEP}:
+                    return
+                else:
+                    debug_send("dd_to_buffer: closing existing dd with status = " + p["dd_to_buffer"].status(), tochat=True)
+                    close_pid_p_gradually("dd_to_buffer")
+            except Exception as x:
+                debug_send("dd_to_buffer: (about \"dd_to_buffer\"): " + str(x), tochat=True)
+        
+        # in case dd to buffer hasn't been spawned
+        ## spawn new dd_to_buffer process
+        ## with --hls-live-edge = 1 ?
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN) # avoiding zombies
+        p["dd_to_buffer"] = psutil.Popen(("dd if=%s of=%s" % (_stream_pipel, _stream_buffer_file)).split())
+        pids["dd_to_buffer"] = p["dd_to_buffer"].pid
+        debug_send("$$$$(Popen)$$$$$  dd_to_buffer $$$$$$(%d)$$$$$" % p["dd_to_buffer"].pid)
+
+
+def dd_to_pipe(p):
+    with lock_dd:
+        ## suspend existing dd to buffer
+        if p["dd_to_buffer"] is not None:
+            if p["dd_to_buffer"].is_running():
+                try:
+                    # suspend dd to buffer
+                    #debug_send("dd_to_pipe: \"dd_to_buffer\" status = " + p["dd_to_buffer"].status())
+                    if p["dd_to_buffer"].status() != psutil.STATUS_STOPPED:
+                        debug_send("dd_to_pipe: suspend \"dd_to_buffer\"")
+                        os.kill(p["dd_to_buffer"].pid, signal.SIGTSTP)
+                        #p["dd_to_buffer"].suspend()
+                except Exception as x:
+                    debug_send("dd_to_pipe: (about \"dd_to_buffer\"): %s" + str(x), tochat=True)
+            else:
+                debug_send("dd_to_pipe: \"dd_to_buffer\" is not running")
+        
+        # if dd_to_pipe exists
+        if p["dd_to_pipe"] is not None and p["dd_to_pipe"].is_running():
+            try:
+                # resume existing dd to pipe
+                #debug_send("dd_to_pipe: \"dd_to_pipe\" status = " + p["dd_to_pipe"].status())
+                if p["dd_to_pipe"].status() == psutil.STATUS_STOPPED:
+                    debug_send("dd_to_pipe: resume \"dd_to_pipe\"")
+                    os.kill(p["dd_to_pipe"].pid, signal.SIGCONT)
+                    toggles["livestreamer__on"] = RETRY_COUNT
+                    #p["dd_to_pipe"].resume()
+                    return
+                elif p["dd_to_pipe"].status() in {psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_DISK_SLEEP}:
+                    return
+                else:
+                    debug_send("dd_to_pipe: closing existing dd with status = " + p["dd_to_pipe"].status(), tochat=True)
+                    close_pid_p_gradually("dd_to_pipe")
+            except Exception as x:
+                debug_send("dd_to_pipe: (about \"dd_to_pipe\"): " + str(x), tochat=True)
+        
+        # in case dd to pipe hasn't been spawned
+        ## spawn new dd_to_pipe process
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN) # avoiding zombies
+        p["dd_to_pipe"] = psutil.Popen(("dd if=%s of=%s" % (_stream_pipel, _stream_pipe)).split())
+        pids["dd_to_pipe"] = p["dd_to_pipe"].pid
+        debug_send("****(Popen)**** dd_to_pipe ******(%d)******" % p["dd_to_pipe"].pid)
 
 
 def on_setplayer(args):
@@ -1826,14 +1803,17 @@ def on_commercial(args):
     else:
         length = 30
     
-    if (datetime.now() - commercial.lastruntime[0]).seconds <= 12*60:
+    if (datetime.now() - commercial_lastruntime[0]).seconds <= 12*60:
         conn.msg("error, interval between commercials is less than 12 minutes")
         return
     
     start_multiprocess(commercial, args=(length,))
 
 def commercial(length):
-    if (datetime.now() - commercial.lastruntime[0]).seconds <= 12*60:
+    if not lock_commercial.acquire(block=False):
+        return
+    
+    if (datetime.now() - commercial_lastruntime[0]).seconds <= 12*60:
         return
     
     if not twitch_stream_online():
@@ -1853,15 +1833,18 @@ def commercial(length):
                          )
         if r.status_code == 204:
             print("--) successful commercial request")
+        elif r.status_code == 422:
+            debug_send( "unsuccessful response from twitch after sending commercial request: " + \
+                        str(r.text.replace('\n', '\\n ')) )
         else:
-            conn.msg("unsuccessful response from twitch after sending commercial request: " + \
-                      str(r.text.replace('\n', '\\n ')))
+            debug_send( "unsuccessful response from twitch after sending commercial request: " + \
+                        str(r.text.replace('\n', '\\n ')), tochat=True )
     except Exception as x:
         debug_send("warning, exception occured while sending twitch api request for commerial: " + str(x))
     
+    commercial_lastruntime[0] = datetime.now()
     
-    commercial.lastruntime[0] = datetime.now()
-commercial.lastruntime = manager.list([datetime.now()])
+    lock_commercial.release()
 
 
 def on_title(args):
@@ -1922,29 +1905,39 @@ def on_version(args):
     conn.msg("Bot version: " + VERSION)
 
 
-
 def on_processes(args):
-    if len(args) != 0:
-        conn.msg("error, this command doesn't accept any arguments")
+    if len(args) > 1:
+        conn.msg("error, this command accepts one or none arguments")
+    
+    if len(args) == 1 and args[0] == "--debug":
+        tochat = True
+    else:
+        tochat = False
     
     alive_pids = []
     for pid_name, pid in pids.items():
         if pid_alive(pid):
             alive_pids.append(pid_name)
-    conn.msg("alive pids: " + ', '.join(alive_pids))
     
     alive_mpids = []
     for mpid_name, mpid in mpids.items():
         if pid_alive(mpid):
             alive_mpids.append(mpid_name)
-    conn.msg("alive mpids: " + ', '.join(alive_mpids))
     
     current_toggles = []
     for Toggle, Toggle_state in toggles.items():
         current_toggles.append("[%s: %s]" % (Toggle, str(Toggle_state)))
-    conn.msg("toggles: " + ', '.join(current_toggles))
     
-    conn.msg("active children: " + str(active_children()))
+    current_statuses = []
+    for Status, Status_value in status.items():
+        current_statuses.sppend("[%s: %s]" % (Status, str(Status_value)))
+    
+    debug_send("alive pids: " + ', '.join(alive_pids), tochat)
+    debug_send("alive mpids: " + ', '.join(alive_mpids), tochat)
+    debug_send("toggles: " + ', '.join(current_toggles), tochat)
+    debug_send("statuses: " + ', '.join(current_statuses), tochat)
+    debug_send("commercial_lastruntime: " + str(commercial_lastruntime), tochat)
+    #debug_send("active children: " + str(active_children()), tochat)
 
 
 def on_killprocess(args):
@@ -2185,7 +2178,7 @@ def main():
     pids = manager.dict({ "dummy_video_loop": None, "ffmpeg": None
                         , "livestreamer": None, "l_ffmpeg": None, "pv": None
                         , "keep_pipe": None, "keep_pipel": None
-                        , "cat_to_buffer": None, "cat_to_pipe": None
+                        , "dd_to_buffer": None, "dd_to_pipe": None
                         })
     mpids = manager.dict({ "stream_supervisor": None, "dummy_video_loop": None, "ffmpeg": None
                          , "tldef": None, "livestreamer": None, "online_fetch": None, "proceed_on_title": None
@@ -2210,12 +2203,18 @@ def main():
     
     logging.basicConfig(level=logging.DEBUG)
     
+    afreeca_api.init(conn.msg, debug_send)
+    
+    # initializing log file
+    global logfiledescriptor
+    logfiledescriptor = open("log%d" % _stream_id, 'a')
+    
     debug_send("========================")
     dump_status()
     
-    afreeca_api.init(conn.msg, debug_send)
-    
     conn.start()
+    
+    logfiledescriptor.close()
 
 
 @atexit.register
@@ -2227,12 +2226,8 @@ def stop_processes():
     
     for pid_name, pid in pids.items():
         if pid_alive(pid):
-            print("terminating [%s] process" % pid_name)
-            terminate_pid_p(pid_name)
-        #else:
-            #print("%s process not alive" % pid_name)
-    
-    time.sleep(3)
+            print("closing [%s] process" % pid_name)
+            close_pid_p_gradually(pid_name)
     
     print("waiting additional 7 seconds for mpids to close automatically")
     counter = 7
@@ -2242,27 +2237,23 @@ def stop_processes():
     
     for mpid_name, mpid in mpids.items():
         if pid_alive(mpid):
-            print("killing [%s] multiprocess" % mpid_name)
+            print("killing [%s] multiprocess !" % mpid_name)
             kill_pid_m(mpid_name)
-        #else:
-            #print("%s multiprocess not alive" % mpid_name)    
-    
-    #pkill -f "/bin/sh -c cat loop0.ts > pipe4"
     
     for pid_name, pid in pids.items():
         if pid_alive(pid):
-            print("process [%s] is still alive" % pid_name)
+            print("process [%s] is still alive !" % pid_name)
     
     for mpid_name, mpid in mpids.items():
         if pid_alive(mpid):
-            print("multiprocess [%s] is still alive" % mpid_name)
+            print("multiprocess [%s] is still alive !" % mpid_name)
     
     print("trying to kill child processes")
     kill_child_processes(os.getpid(), 9)
     
-    if debug_send.logfiledescriptor is not None:
-        print("<<<<<<<===Bot exitted===>>>>>>>\n\n", file=debug_send.logfiledescriptor)
-        debug_send.logfiledescriptor.close()
+    if logfiledescriptor is not None:
+        print("<<<<<<<===Bot exited===>>>>>>>\n\n", file=logfiledescriptor)
+        logfiledescriptor.close()
     
     print("stopped")
 
