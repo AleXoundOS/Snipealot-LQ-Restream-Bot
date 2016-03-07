@@ -45,7 +45,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.3"
+VERSION = "2.2.5"
 ACTIVE_BOTS = 4
 
 
@@ -205,6 +205,7 @@ def start_multiprocess(target, args=()):
         #print("warning, %s is not in mpids" % target.__name__)
         debug_send("warning, %s is not in mpids" % target.__name__)
     mprocess = Process(target=target, args=args)
+    #mprocess.daemon = True
     mprocess.start()
     mpids[target.__name__] = mprocess.pid
 
@@ -324,7 +325,7 @@ def close_pid_p_gradually(process_name):
             for i in range(10):
                 if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
                     if i != 0:
-                        print("0.1")
+                        print(i)
                         time.sleep(0.1)
                 else:
                     p.wait(timeout=0)
@@ -1014,11 +1015,11 @@ def stream_supervisor():
                     # if it's not suspended
                     if p_dvl.status() != psutil.STATUS_STOPPED:
                         #debug_send("p_dvl.status() = " + p_dvl.status())
-                        start_multiprocess(commercial, args=(30,))
                         
                         # suspend it
                         debug_send("suspending p_dvl")
-                        p_dvl.suspend()
+                        os.kill(p_dvl.pid, signal.SIGTSTP)
+                        #p_dvl.suspend()
                         
                         if antispam(just_check=True):
                             conn.msg("(afreeca started sending stream data, stopping dummy video)")
@@ -1047,7 +1048,11 @@ def stream_supervisor():
             if p_dvl.status() == psutil.STATUS_STOPPED:
                 # resume it
                 debug_send("resuming p_dvl")
-                p_dvl.resume()
+                os.kill(p_dvl.pid, signal.SIGCONT)
+                #p_dvl.resume()
+                
+                # ! commented, as every process leaves one open FIFO pipe descriptor
+                #start_multiprocess(commercial, args=(30,))
                 
                 if antispam():
                     conn.msg("(afreeca is not responding, starting dummy video)")
@@ -1078,16 +1083,15 @@ def stream_supervisor():
             if psutil.pid_exists(pids["dummy_video_loop"]):
                 try:
                     p_dvl = psutil.Process(pids["dummy_video_loop"])
+                    if p_dvl.status() != psutil.STATUS_STOPPED:
+                        # check for having dummy videos running for too long, !refresh after 140s of running dummy videos
+                        if (dummy_timer > 140):
+                            on_refresh(["--quiet"])
+                            dummy_timer = 0
+                        else:
+                            dummy_timer += SUPERVISOR_INTERVAL
                 except Exception as x:
                     debug_send("supervisor loop: Process(dvl): " + str(x), tochat=True)
-                
-                if p_dvl.status() != psutil.STATUS_STOPPED:
-                    # check for having dummy videos running for too long, !refresh after 140s of running dummy videos
-                    if (dummy_timer > 140):
-                        on_refresh(["--quiet"])
-                        dummy_timer = 0
-                    else:
-                        dummy_timer += SUPERVISOR_INTERVAL
         else:
             dummy_timer = 0
         
@@ -1187,7 +1191,7 @@ def on_startstream(args):
         
         # starting ffmpeg to stream from pipe
         #ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
-        ffmpeg__cmd = "ffmpeg -i " + _stream_pipe + " -vsync 0 -c:v copy " \
+        ffmpeg__cmd = "ffmpeg -re -i " + _stream_pipe + " -vsync 0 -c:v copy " \
                       "-c:a libfdk_aac -cutoff 18000 -b:a 128k " \
                       "-f flv " + RTMP_SERVER + "/" + STREAM[_stream_id]["stream_key"]
         #ffmpeg__cmd += ffmpeg_options
@@ -1201,10 +1205,6 @@ def on_startstream(args):
         
         close_pid_p_gradually("keep_%s" % _stream_pipe)
         close_pid_p_gradually("keep_%s" % _stream_pipel)
-        
-        #p_pipe.wait()
-        #p_pipel.wait()
-        
     
     
     # check if pipe file exists&valid or create a new one
@@ -1278,7 +1278,6 @@ def on_restartstream(args):
 
 def startplayer(afreeca_id, player):
     def livestreamer(afreeca_id):
-        global bjStreamCarriers
         # checking if BJ has a remembered relation of carrier
         if afreeca_id not in bjStreamCarriers:
             # getting info about carrier using Livestreamer Python API
@@ -1304,9 +1303,6 @@ def startplayer(afreeca_id, player):
             else:
                 conn.msg("%s does not have any stream online" % player)
                 return -1
-        #else:
-            #debug_send("livestreamer mprocess: using remembered %s carrier for %s (%s)"
-                       #% (bjStreamCarriers[afreeca_id], player, afreeca_id))
         
         livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS) # adding options from settings file
         livestreamer__cmd += " afreeca.com/%s best -O" % (afreeca_id)
@@ -1340,8 +1336,7 @@ def startplayer(afreeca_id, player):
                 debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
         
         toggles["livestreamer__on"] = RETRY_COUNT
-        #while toggles["livestreamer__on"] > 0:
-        while toggles["livestreamer__on"] > 0 and isbjon(afreeca_id, quiet=True):
+        while toggles["livestreamer__on"] > 0:
             # checking if stream pipe file (pipe?l) exists and is a pipe
             try:
                 if not stat.S_ISFIFO(os.stat(_stream_pipel).st_mode):
@@ -1354,11 +1349,12 @@ def startplayer(afreeca_id, player):
             #l_ffmpeg_log_file = open("l_ffmpeg_log%d" % _stream_id, 'a')
             
             # creating livestreamer process that outputs to a pipe
-            livestreamer__process = Popen(livestreamer__cmd.split(), stdout=PIPE, shell=False)
+            livestreamer__process = Popen(livestreamer__cmd.split(), stdout=PIPE)
             pids["livestreamer"] = livestreamer__process.pid # adding it's pid to global dictionary
             
             # creating ffmpeg process that gets input from livestreamer and outputs to stdout
-            ffmpeg__process = Popen(ffmpeg__cmd.split(), stdin=livestreamer__process.stdout, stdout=PIPE, stderr=DEVNULL, shell=False)
+            ffmpeg__process = Popen( ffmpeg__cmd.split()
+                                   , stdin=livestreamer__process.stdout, stdout=PIPE, stderr=DEVNULL )
             pids["l_ffmpeg"] = ffmpeg__process.pid # adding it's pid to global dictionary
             
             # creating pv process that gets input from ffmpeg
@@ -1388,9 +1384,9 @@ def startplayer(afreeca_id, player):
             debug_send( "livestreamer__exit_code = %d, ffmpeg__exit_code = %d, pv__exit_code = %d" \
                       % (livestreamer__exit_code, ffmpeg__exit_code, pv__exit_code))
             
-            if toggles["livestreamer__on"] > 0:
+            if toggles["livestreamer__on"] > 0 and isbjon(afreeca_id, quiet=True):
                 debug_send("reconnecting to %s (%s)  [%d retries left], exit codes: %d %d" % \
-                         (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
+                          (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
         #end toggles["livestreamer__on"] > 0:
         
         #maintain_pipel()
@@ -1412,17 +1408,18 @@ def startplayer(afreeca_id, player):
         debug_send( "livestreamer ended with codes: %d %d %d" \
                   % (livestreamer__exit_code, ffmpeg__exit_code, pv__exit_code))
         
+        #if ffmpeg__exit_code == 1:
+            #debug_send("livestreamer mprocess: ffmpeg exit code = 1; forgetting remembered %s carrier for %s (%s)"
+                      #% (bjStreamCarriers[afreeca_id], player, afreeca_id), tochat=True)
+            #bjStreamCarriers.pop(afreeca_id)
+        
         start_multiprocess(commercial, args=(30,))
         
-        # checking exit codes of livestreamer and ffmpeg processes (doubtful interpretation)
-        if livestreamer__exit_code == 1: # and ffmpeg__exit_code == 1:
-            conn.msg("afreeca stream appears to be offline, inaccessible or has incompatible stream container")
-        #elif livestreamer__exit_code == 0 and ffmpeg__exit_code == 1:
-            #conn.msg("afreeca stream has incompatible stream container")
-        elif livestreamer__exit_code == -15:
+        if livestreamer__exit_code in {0, 255, -15, -9}:
             conn.msg("afreeca stream playback ended")
         else:
-            debug_send("afreeca stream playback ended with exit codes: %d %d" % (livestreamer__exit_code, ffmpeg__exit_code))
+            conn.msg( "afreeca stream appears to be offline, inaccessible or has incompatible stream container (%d)"
+                    % livestreamer__exit_code )
     #end def livestreamer(afreeca_id):
     
     if pid_alive(mpids["livestreamer"]) or pid_alive(pids["livestreamer"]):
@@ -1636,6 +1633,10 @@ def on_setplayer(args):
         conn.msg("error, this player is forbidden")
         return True
     
+    if not isbjon(afreeca_id, quiet=True):
+        conn.msg(player + " is offline")
+        return True
+    
     if pid_alive(mpids["livestreamer"]):
         if on_stopplayer([]) == -1:
             return
@@ -1656,6 +1657,10 @@ def on_setmanual(args):
     
     if len(args) == 2:
         player = args[1]
+    
+    if not isbjon(afreeca_id, quiet=True):
+        conn.msg(player + " is offline")
+        return True
     
     if pid_alive(mpids["livestreamer"]):
         if on_stopplayer([]) == -1:
@@ -1782,7 +1787,6 @@ def twitch_stream_online():
     return True if r.status_code == 200 else False
 
 
-# is it needed? yes
 def on_isbjon(args):
     if len(args) == 0:
         if status["afreeca_id"] is not None:
@@ -1834,14 +1838,19 @@ def on_commercial(args):
     start_multiprocess(commercial, args=(length,))
 
 def commercial(length):
+    debug_send("commercial")
     if not lock_commercial.acquire(block=False):
+        debug_send("lock not acquired", tochat=True)
         return
+    debug_send("lock acquired")
     
     if (datetime.now() - commercial_lastruntime[0]).seconds <= 12*60:
+        lock_commercial.release()
         return
     
     if not twitch_stream_online():
         conn.msg("error, cannot start commercial - twitch stream is not running")
+        lock_commercial.release()
         return
     
     print("requesting %ds commercial" % length)
@@ -1864,7 +1873,7 @@ def commercial(length):
             debug_send( "unsuccessful response from twitch after sending commercial request: " + \
                         str(r.text.replace('\n', '\\n ')), tochat=True )
     except Exception as x:
-        debug_send("warning, exception occured while sending twitch api request for commerial: " + str(x))
+        debug_send("warning, exception occured while sending twitch api request for commercial: " + str(x))
     
     commercial_lastruntime[0] = datetime.now()
     

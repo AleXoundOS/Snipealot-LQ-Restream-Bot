@@ -50,9 +50,10 @@ def print_online_list(online_BJs, message="streamers online: ", verbose=False):
 def get_online_BJs(afreeca_database, verbose=False, quiet=False, tune_oom=False, broadlist_filename=None):
     if tune_oom:
         # tuning linux oom killer for current process for high chance to kill it,
-        # as ast.literal_eval parsing process consumes a lot of memory 500+ megobytes of RAM
+        # as ast.literal_eval parsing process consumes a lot of memory 500+ megabytes of RAM
         with open("/proc/%d/oom_adj" % os.getpid(), 'w') as hF:
             print("%d" % 14, file=hF)
+        os.nice(20)
         # but it will affect the calling process...
     
     print_msg("fetching online streamers list...")
