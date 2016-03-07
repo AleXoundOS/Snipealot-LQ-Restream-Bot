@@ -45,7 +45,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.1"
+VERSION = "2.2.3"
 ACTIVE_BOTS = 4
 
 
@@ -87,7 +87,6 @@ status = {}
 onstream_responses = manager.dict({})
 votes = {}
 voted_users = []
-addons = manager.dict({})
 dummy_videos = manager.list([])
 commercial_lastruntime = manager.list([datetime.now()])
 
@@ -111,6 +110,7 @@ logfiledescriptor = None
 lock_dd = Lock()
 lock_logger = Lock()
 lock_commercial = Lock()
+lock_reconnect = Lock()
 
 def load_settings(filename):
     global STREAM, TWITCH_IRC_SERVER, RTMP_SERVER, LIVESTREAMER_OPTIONS, FFMPEG_OPTIONS, RETRY_COUNT, TEST
@@ -420,29 +420,14 @@ class IRCClass(SimpleIRCClient):
                 stream_supervisor__mprocess = Process(target=stream_supervisor, args=())
                 stream_supervisor__mprocess.start()
                 mpids["stream_supervisor"] = stream_supervisor__mprocess.pid
+            if not pid_alive(mpids["chat_connection_track"]):
+                chat_connection_track__mprocess = Process(target=chat_connection_track, args=())
+                chat_connection_track__mprocess.start()
+                mpids["chat_connection_track"] = chat_connection_track__mprocess.pid
     
     def on_disconnect(self, connection, event):
         debug_send("\ndisconnected from %s\n" % connection.server)
-        time.sleep(2)
-        if not self.connection.is_connected():
-            #on_switch_irc([])
-            #if len(args) > 0:
-                #print("connecting to %s server" % args[0])
-                #conn.connect(args[0], 6667, conn.nickname, "")
-                
-            if conn.connection.server == TWITCH_IRC_SERVER["address"]:
-                debug_send("connecting to %s server" % FALLBACK_IRC_SERVER["address"])
-                conn.connect( FALLBACK_IRC_SERVER["address"], FALLBACK_IRC_SERVER["port"]
-                            , conn.nickname, ""
-                            )
-            else:
-                debug_send("connecting to %s server" % TWITCH_IRC_SERVER["address"])
-                conn.connect( TWITCH_IRC_SERVER["address"], TWITCH_IRC_SERVER["port"]
-                            , conn.nickname, conn.password
-                            )
-        #self.connect(FALLBACK_IRC_SERVER["address"], self.port, self.nickname, self.password)
-        #on_restartbot([])
-        
+    
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
         
@@ -521,10 +506,7 @@ class IRCClass(SimpleIRCClient):
             index = 0
             while True:
                 if (len(string) - index <= splitLength):
-                    try:
-                        self.connection.privmsg(self.channel, string[index:])
-                    except Exception as x:
-                        print_exception(x, "sending privmsg")
+                    self.connection.privmsg(self.channel, string[index:])
                     break;
                 
                 # first try to find commas in the current portion of text of length <= splitLength and split by them
@@ -562,15 +544,62 @@ class IRCClass(SimpleIRCClient):
             lines_count = len(message_list)
             if lines_count > 1:
                 for line in message_list:
-                    split_and_send_string(line)
+                    try:
+                        split_and_send_string(line)
+                    except Exception as x:
+                        print_exception(x, "sending privmsg")
+                        debug_send(message)
+                        break;
                     lines_count -= 1
                     if lines_count > 0:
-                        print("sleeping for 1.5 seconds after new line in a message")
-                        time.sleep(1.5)
+                        #print("sleeping for 1 second after new line in a message")
+                        time.sleep(1)
             else:
-                split_and_send_string(message)
+                try:
+                    split_and_send_string(message)
+                except Exception as x:
+                    print_exception(x, "sending privmsg")
+                    debug_send(message)
         else:
             print("not connected, redirected message to stdout: " + message)
+
+
+def chat_connection_track(just_switch=False, reconnection_interval=8):
+    # maybe the "conn" inside multiprocess is just a copy, haha
+    def switch():
+        if not lock_reconnect.acquire(block=False):
+            debug_send("one reconnect function is already running")
+            return
+        
+        if conn.connection.server == TWITCH_IRC_SERVER["address"]:
+            conn.connection.server = FALLBACK_IRC_SERVER["address"]
+            debug_send("connecting to %s server" % FALLBACK_IRC_SERVER["address"])
+            conn.connect( FALLBACK_IRC_SERVER["address"], FALLBACK_IRC_SERVER["port"]
+                        , conn.nickname, "" )
+        else:
+            conn.connection.server = TWITCH_IRC_SERVER["address"]
+            debug_send("connecting to %s server" % TWITCH_IRC_SERVER["address"])
+            conn.connect( TWITCH_IRC_SERVER["address"], TWITCH_IRC_SERVER["port"]
+                        , conn.nickname, conn.password )
+        #conn.connect(FALLBACK_IRC_SERVER["address"], conn.port, conn.nickname, conn.password)
+        
+        lock_reconnect.release()
+    
+    if just_switch:
+        switch()
+        return
+    
+    while True:
+        if not conn.connection.is_connected():
+            switch()
+        elif conn.connection.server != TWITCH_IRC_SERVER["address"]:
+            # warning, this is done without calling disconnect from connected server
+            switch()
+            if not conn.connection.is_connected():
+                debug_send("waiting 8*60 seconds after twitch IRC server connection attempt")
+                time.sleep(8*60)
+        time.sleep(reconnection_interval)
+
 
 def on_onstream(request_channel):
     # clearing them all
@@ -669,7 +698,7 @@ def voting(vote_set=None):
     toggles["voting__on"] = True
     
     if vote_set is None:
-        online_set = frozenset(bj["nickname"] for bj in online_fetch(afreeca_database))
+        online_set = frozenset(bj["nickname"] for bj in online_fetch(afreeca_database, tune_oom=True))
         if online_set == -1:
             # i.e. couldn't get online list
             conn.msg("couldn't start vote for all online players")
@@ -738,7 +767,7 @@ def voting(vote_set=None):
 
 def stream_supervisor():
     debug_send("stream supervisor started")
-        
+    
     def autoswitch():
         if pid_alive(mpids["livestreamer"]) or toggles["voting__on"]:
             autoswitch.waitcounter = AUTOSWITCH_START_DELAY
@@ -1093,8 +1122,9 @@ def stream_supervisor():
             except Exception as x:
                 print_exception(x, "running autoswitch", tochat=True)
                 autoswitch.waitcounter = AUTOSWITCH_START_DELAY
+    debug_send("stream supervisor exited!")
     #while toggles["stream_supervisor__on"]:
-
+#def stream_supervisor():
 
 def on_startsupervisor(args):
     if len(args) != 0:
@@ -1157,19 +1187,13 @@ def on_startstream(args):
         
         # starting ffmpeg to stream from pipe
         #ffmpeg__cmd = [ "ffmpeg", "-re", "-i", _stream_pipe ]
-        ffmpeg__cmd = [ "ffmpeg" ]
+        ffmpeg__cmd = "ffmpeg -i " + _stream_pipe + " -vsync 0 -c:v copy " \
+                      "-c:a libfdk_aac -cutoff 18000 -b:a 128k " \
+                      "-f flv " + RTMP_SERVER + "/" + STREAM[_stream_id]["stream_key"]
         #ffmpeg__cmd += ffmpeg_options
-        ffmpeg__cmd += [ "-i", _stream_pipe ]
-        #ffmpeg__cmd += [ "-c", "copy", "-copyinkf" ]
-        ffmpeg__cmd += [ "-vsync", "0", "-c:v", "copy" ]
-        #ffmpeg__cmd += [ "-c:v", "copy", "-copyinkf" ]
-        #ffmpeg__cmd += [ "-c:v", "copy" ]
-        ffmpeg__cmd += [ "-c:a", "libfdk_aac", "-cutoff", "18000", "-b:a", "128k" ]
-        ffmpeg__cmd += [ "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
         #ffmpeg__cmd += [ "-bsf:a", "aac_adtstoasc", "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
-        # Popen(, cwd="folder")
-        debug_send("\n%s\n" % ' '.join(ffmpeg__cmd))
-        ffmpeg__process = Popen(ffmpeg__cmd)
+        debug_send("\n%s\n" % ffmpeg__cmd)
+        ffmpeg__process = Popen(ffmpeg__cmd.split())
         pids["ffmpeg"] = ffmpeg__process.pid
         ffmpeg__exit_code = ffmpeg__process.wait()
         
@@ -1787,7 +1811,7 @@ def on_isbjon(args):
     else:
         return False
     
-    start_multiprocess(isbjon, (afreeca_id,))
+    start_multiprocess(isbjon, args=(afreeca_id,))
 
 
 def on_commercial(args):
@@ -1894,7 +1918,7 @@ def on_online(args):
             return False
     
     if not pid_alive(mpids["online_fetch"]):
-        start_multiprocess(online_fetch, (afreeca_database,verbose,))
+        start_multiprocess(online_fetch, args=(afreeca_database,verbose,False,True,))
     else:
         debug_send("warning: attempted to start second mprocess for !online")
 
@@ -1909,7 +1933,7 @@ def on_processes(args):
     if len(args) > 1:
         conn.msg("error, this command accepts one or none arguments")
     
-    if len(args) == 1 and args[0] == "--debug":
+    if len(args) == 1 and args[0] == "--stdout":
         tochat = True
     else:
         tochat = False
@@ -2004,83 +2028,6 @@ def get_statuses():
     
     return statuses
 
-def on_addon_load(args):
-    if len(args) != 1:
-        conn.msg("error, 1 argument required")
-        return
-    addon_filename = args[0]
-    
-    if addon_filename not in os.listdir("addons/"):
-        conn.msg("error, such addon does not exist")
-        return
-    
-    debug_send("loading addon: " + addon_filename)
-    #try:
-        #module = __import__("modules." + module_name, globals())
-    #except Exception as x:
-        #debug_send("warning, exception occured while loading %s module: %s" % (module_name, str(x)))
-        #return
-    
-    def try_addon():
-        try:
-            with open("addons/" + addon_filename, 'r') as f:
-                exec(f.read(), globals())
-        except Exception as x:
-            del addons[addon_filename]
-            debug_send("exception in %s addon: %s" (addon_filename, str(x)))
-    
-    #try:
-        #start_multiprocess(getattr(module, module_name).start)
-    #except Exception as x:
-        #debug_send("warning, exception occured in %s module: %s" % (module_name, str(x)))
-    
-    process = Process(target=try_addon)
-    process.start()
-    addons.update({addon_filename: process.pid})
-
-def on_addon_unload(args):
-    if len(args) != 1:
-        conn.msg("error, 1 argument required")
-        return
-    
-    addon_filename = args[0]
-    if addon_filename not in addons:
-        conn.msg("error, such addon is not loaded")
-        return
-    
-    try:
-        kill_child_processes(addons[addon_filename])
-        os.kill(addons[addon_filename], 9)
-    except Exception as x:
-        conn.msg("exception occured while unloading %s addon" % addon_filename)
-    
-    time.sleep(1) # careful here
-    if pid_alive(addons[addon_filename]):
-        conn.msg("internal error, addon %s is not unloaded" % addon_filename)
-    else:
-        del addons[addon_filename]
-        conn.msg("addon %s is unloaded" % addon_filename)
-
-def on_addon_reload(args):
-    if len(args) != 1:
-        conn.msg("error, 1 argument required")
-        return
-    
-    if args[0] not in addons:
-        conn.msg("error, such addon is not loaded")
-        return
-    
-    on_addon_unload(args)
-    on_addon_load(args)
-
-
-def on_addons(args):
-    if len(args) != 0:
-        conn.msg("error, this command doesn't accept arguments")
-        return
-    
-    conn.msg("loaded addons: " + ", ".join([name + (" (%d)" % pid) for name, pid in addons.items()]))
-
 
 def on_reloadsettings(args):
     if len(args) > 0:
@@ -2138,10 +2085,6 @@ mod_commands = { "help": on_help
                , "processes": on_processes
                , "killprocess": on_killprocess
                , "reloadsettings": on_reloadsettings
-               , "addons": on_addons
-               , "addon_load": on_addon_load
-               , "addon_unload": on_addon_unload
-               , "addon_reload": on_addon_reload
                , "tldef": on_tldef
                , "vote": on_vote
                , "title": on_title
@@ -2174,7 +2117,7 @@ def main():
     _stream_buffer_file = "/dev/null"
     
     
-    global mpids, pids, toggles, status, voted_users, addons
+    global mpids, pids, toggles, status, voted_users
     pids = manager.dict({ "dummy_video_loop": None, "ffmpeg": None
                         , "livestreamer": None, "l_ffmpeg": None, "pv": None
                         , "keep_pipe": None, "keep_pipel": None
@@ -2184,6 +2127,7 @@ def main():
                          , "tldef": None, "livestreamer": None, "online_fetch": None, "proceed_on_title": None
                          , "proceed_online_fetch": None, "on_onstream": None, "on_voting": None
                          , "commercial": None, "isbjon": None
+                         , "chat_connection_track": None
                          })
     toggles = manager.dict({ "stream_supervisor__on": True, "dummy_video_loop__on": False
                            , "streaming__enabled": True, "livestreamer__on": False, "voting__on": False
