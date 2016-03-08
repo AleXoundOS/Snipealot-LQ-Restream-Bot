@@ -45,7 +45,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.6"
+VERSION = "2.2.7"
 ACTIVE_BOTS = 4
 
 
@@ -202,7 +202,6 @@ print_exception.last_message = ""
 
 def start_multiprocess(target, args=()):
     if target.__name__ not in mpids:
-        #print("warning, %s is not in mpids" % target.__name__)
         debug_send("warning, %s is not in mpids" % target.__name__)
     mprocess = Process(target=target, args=args)
     #mprocess.daemon = True
@@ -246,11 +245,10 @@ def pid_alive(pid):
         else:
             return False
     except Exception as x:
-        debug_send("exception occurred while checking pid status: " + str(x))
+        print_exception(x, "%s: checking pid status" % pid_alive.__name__)
         return False
 
 def terminate_pid_p(pids_process):
-    #debug_send("about to terminate [%s] process" % pids_process)
     try:
         if pids[pids_process] is None:
             debug_send("error, process [%s] is None" % pids_process)
@@ -260,7 +258,7 @@ def terminate_pid_p(pids_process):
         os.kill(pid, 15)
         
     except Exception as x:
-        debug_send("Exception while terminating %d pid (%s): " % (pid if pid is not None else -1, pids_process) + str(x))
+        print_exception(x, "terminating %d pid (%s)" % (pid if pid is not None else -1, pids_process))
         return False
     
     # waiting a few seconds to terminate
@@ -286,7 +284,6 @@ def kill_pid_p(pids_process):
         os.kill(pid, 9)
         
     except Exception as x:
-        #debug_send("Exception while killing %d pid:" + str(x) % pid)
         debug_send("Exception while killing %d pid (%s): " % (pid, pids_process) + str(x))
     
     # waiting a few seconds to kill
@@ -337,7 +334,6 @@ def close_pid_p_gradually(process_name):
 
 
 def terminate_pid_m(mpids_process):
-    #debug_send("about to terminate [%s] mprocess" % mpids_process)
     if mpids[mpids_process] is None:
         debug_send("error, mprocess [%s] is None" % mpids_process)
         return False
@@ -363,7 +359,6 @@ def terminate_pid_m(mpids_process):
         return True
 
 def kill_pid_m(mpids_process):
-    #debug_send("about to kill [%s] mprocess" % mpids_process)
     if mpids[mpids_process] is None:
         debug_send("error, mprocess [%s] is None" % mpids_process)
         return False
@@ -486,14 +481,6 @@ class IRCClass(SimpleIRCClient):
                             break
             except Exception as x:
                 self.msg("internal error occurred while processing a vote: " + str(x))
-    
-    #receive ping -> try to connect to twitch server (if not connected to it)
-    #bad experience, ping is received right after connecting, so this method is useless
-    #def on_ping(self, connection, event):
-        #if conn.connection.server != TWITCH_IRC_SERVER["address"]:
-            ##on_switch_irc([])
-            #conn.connection.quit()
-    
     
     def msg(self, message):
         def split_and_send_string(string):
@@ -676,15 +663,6 @@ def on_vote(args):
     start_multiprocess(on_voting)
 
 
-#def voting_decorator(voting_func):
-    #def inner(vote_set):
-        #on_title(["--quiet", "voting in progress, type desired nickname"])
-        #ret = voting_func(vote_set)
-        #on_title(["--quiet", get_statuses()[_stream_id])
-        #return ret
-    #return inner
-
-#@voting_decorator
 def voting(vote_set=None):
     if toggles["voting__on"]:
         conn.msg("error, another voting process is already running")
@@ -740,8 +718,8 @@ def voting(vote_set=None):
     else:
         #these_votes = lambda votes, vote_set: {key: votes[key] for key in vote_set}
         these_votes = {key: votes[key.lower()] for key in vote_set}
-    #print(str(vote_set))
-    #print(str(these_votes))
+    debug_send("vote_set: " + str(vote_set))
+    debug_send("these_votes: " + str(these_votes))
     
     max_votes = max(these_votes.values())
     if max_votes > 0:
@@ -780,7 +758,9 @@ def stream_supervisor():
             onstream_set = frozenset([iter2_status["status"]["player"] for iter2_status in statuses])
             
             # getting online_set
+            os.nice(20) # tuning priority down
             online_BJs = online_fetch(afreeca_database, quiet=True)
+            os.nice(0) # tuning priority back
             
             if online_BJs == -1 or len(online_BJs) == 0:
                 # means that couldn't fetch the online list
@@ -834,7 +814,6 @@ def stream_supervisor():
                     elif voted_player != None:
                         on_setplayer([voted_player])
                     else:
-                        #conn.msg("no votes received, picking random streamer")
                         conn.msg( "no votes received, randomly picking one of the two BJs " +
                                   "with highest viewers count and afreeca rank available online" )
                         on_setplayer([random.choice([bj["nickname"] for bj in choice_dicts][:2])])
@@ -890,10 +869,6 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
-            #dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
-                                    #"-re -i \"" + dummy_videofile + "\" " \
-                                    #"-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
-                                    #"-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
             dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
                                     "-re -i " + dummy_videofile + " " \
                                     "-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
@@ -992,7 +967,7 @@ def stream_supervisor():
                     #print("%s  %f %s  [%s]" % (hF.read(16)[:-1], float(digits), units, rate))
             
             except Exception as x:
-                debug_send("exception occurred while reading input rate file: [%d] %s" % (sys.exc_info()[-1].tb_lineno, str(x)))
+                print_exception(x, "reading input rate file: [%d]" % (sys.exc_info()[-1].tb_lineno))
                 hF.close()
                 toggles["dummy_video_loop__on"] = False
                 rate = 0
@@ -1026,7 +1001,7 @@ def stream_supervisor():
         
         #if not pid_alive(mpids["dummy_video_loop"]) and pid_alive(mpids["ffmpeg"]):
         if not pid_alive(mpids["dummy_video_loop"]):
-            # turn on dummy video
+            # start dummy video mprocess
             start_dummy_video()
         
         ## resume dummy video playback (into twitch ffmpeg)
@@ -1064,7 +1039,7 @@ def stream_supervisor():
                           % videofile_relpath )
                 return
         except Exception as x:
-            conn.msg("exception occured while looking for dummy videos: " + str(x))
+            print_exception(x, "looking for dummy videos", tochat=True)
             conn.msg("exiting stream supervisor")
             return
     
@@ -1108,7 +1083,7 @@ def stream_supervisor():
                     conn.msg("stream is off, moderators can use !startstream")
         else:
             try:
-                # checks twitch stream online status every 7*60 seconds
+                # checks twitch stream online status every TWITCH_POLL_INTERVAL seconds
                 if not twitch_stream_online_supervisor():
                     continue
             except Exception as x:
@@ -1261,8 +1236,6 @@ def on_stopstream(args):
 
 
 def on_restartstream(args):
-    #if not (0 <= len(args) <= 1): 
-        #return False
     if len(args) != 0: 
         return False
     
@@ -1316,7 +1289,7 @@ def startplayer(afreeca_id, player):
                            "-loglevel warning " \
                            "-f mpegts -"
         elif bjStreamCarriers[afreeca_id] == "HLS": # if BJ has HLS stream carrier (read from key/value dictionary)
-            # pv --rate-limit doesn't work as expected
+            # pv --rate-limit doesn't work as expected, it computes overall data size over elapsed time
             #ffmpeg__cmd =   "pv --rate-limit %s --wait --average-rate --timer --rate --bytes | " % (HLS_RATE_LIMIT)
             ffmpeg__cmd =  "ffmpeg -y -re -i - " \
                            "-c:v copy -c:a libmp3lame -ar 44100 " \
@@ -1337,7 +1310,7 @@ def startplayer(afreeca_id, player):
             try:
                 os.remove(_stream_rate_file)
             except Exception as x:
-                debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
+                print_exception(x, "deleting %s file" % (_stream_rate_file))
         
         toggles["livestreamer__on"] = RETRY_COUNT
         while toggles["livestreamer__on"] > 0:
@@ -1383,7 +1356,7 @@ def startplayer(afreeca_id, player):
                 try:
                     os.remove(_stream_rate_file)
                 except Exception as x:
-                    debug_send("exception occurred while deleting %s file: %s" % (_stream_rate_file, str(x)))
+                    print_exception(x, "deleting %s file" % (_stream_rate_file))
             
             toggles["livestreamer__on"] -= 1 # once they both exited, decrement remaining retries count
             
@@ -1393,9 +1366,7 @@ def startplayer(afreeca_id, player):
             if toggles["livestreamer__on"] > 0 and isbjon(afreeca_id, quiet=True):
                 debug_send("reconnecting to %s (%s)  [%d retries left], exit codes: %d %d" % \
                           (player, afreeca_id, toggles["livestreamer__on"], livestreamer__exit_code, ffmpeg__exit_code))
-        #end toggles["livestreamer__on"] > 0:
-        
-        #maintain_pipel()
+        #end while toggles["livestreamer__on"] > 0:
         
         # WTF. Why livestreamer's function should set all this crap?
         status["player"] = "[idle]"
@@ -1413,11 +1384,6 @@ def startplayer(afreeca_id, player):
         
         debug_send( "livestreamer ended with codes: %d %d %d" \
                   % (livestreamer__exit_code, ffmpeg__exit_code, pv__exit_code))
-        
-        #if ffmpeg__exit_code == 1:
-            #debug_send("livestreamer mprocess: ffmpeg exit code = 1; forgetting remembered %s carrier for %s (%s)"
-                      #% (bjStreamCarriers[afreeca_id], player, afreeca_id), tochat=True)
-            #bjStreamCarriers.pop(afreeca_id)
         
         start_multiprocess(commercial, args=(30,))
         
@@ -1552,7 +1518,6 @@ def dd_to_buffer(p):
         
         # in case dd to buffer hasn't been spawned
         ## spawn new dd_to_buffer process
-        ## with --hls-live-edge = 1 ?
         p["dd_to_buffer"] = psutil.Popen(("dd if=%s of=%s" % (_stream_pipel, _stream_buffer_file)).split())
         pids["dd_to_buffer"] = p["dd_to_buffer"].pid
         debug_send("$$$$(Popen)$$$$$  dd_to_buffer $$$$$$(%d)$$$$$" % p["dd_to_buffer"].pid)
@@ -1672,7 +1637,7 @@ def on_refresh(args):
         conn.msg("error, this command doesn't accept any arguments")
         return
     
-    # resetting antispam timer (does not work)
+    # resetting antispam timer (does not work since it's not in multiprocess manager)
     #stream_supervisor.antispam.blocktime = datetime.fromtimestamp(0)
     
     if status["player"] != "[idle]" and status["afreeca_id"] is not None:
@@ -1713,10 +1678,7 @@ def on_tldef(args):
                     conn.msg( "warning, couldn't update player nickname & race at teamliquid.net, "
                               "got %d response" % r.status_code )
             except Exception as x:
-                debug_send( "warning, exception occured while updating player nickname & race at "
-                            "teamliquid.net: " + str(x) )
-            
-                        
+                print_exception(x, "updating player nickname & race at teamliquid.net")
         
         # defiler.ru
         counter = 2
@@ -1727,8 +1689,7 @@ def on_tldef(args):
                                  , data = dict(data.items() | DEFILER_API["AUTH_FIELD"].items())
                                  )
             except Exception as x:
-                debug_send( "warning, exception occured while updating player nickname & race at "
-                            "defiler.ru: " + str(x) )
+                print_exception(x, "updating player nickname & race at defiler.ru")
             if r.status_code == 200:
                 if "--quiet" not in args:
                     conn.msg("successfully updated player nickname & race at defiler.ru")
@@ -1837,7 +1798,6 @@ def on_commercial(args):
     start_multiprocess(commercial, args=(length,))
 
 def commercial(length):
-    #signal.signal(signal.SIGCHLD, signal.SIG_IGN) # avoiding zombies (and open file descriptors left after process exit)
     if not lock_commercial.acquire(block=False):
         debug_send("lock not acquired")
         return
@@ -1871,7 +1831,7 @@ def commercial(length):
             debug_send( "unsuccessful response from twitch after sending commercial request: " + \
                         str(r.text.replace('\n', '\\n ')), tochat=True )
     except Exception as x:
-        debug_send("warning, exception occured while sending twitch api request for commercial: " + str(x))
+        print_exception(x, "sending twitch api request for commercial")
     
     commercial_lastruntime[0] = datetime.now()
     
@@ -1901,8 +1861,7 @@ def on_title(args):
                                 , data = { "channel[status]": ' '.join(args) }
                                 )
             except Exception as x:
-                debug_send( "warning, exception occured while sending twitch api request for "
-                            "stream title update: " + str(x) )
+                print_exception(x, "sending twitch api request for stream title update", tochat=True)
                 return
             if r.status_code == 200:
                 if not quiet:
@@ -2031,7 +1990,7 @@ def get_statuses():
                 statuses[stream_id] = json.load(hF)
         except Exception as x:
             statuses[stream_id] = None
-            print("exception occurred while reading status file of bot#%d : %s" % (stream_id, str(x)) )
+            print_exception(x, "reading status file of bot#%d" % (stream_id))
     
     return statuses
 
@@ -2213,7 +2172,7 @@ def kill_child_processes(parent_pid, sig=15):
     try:
         p = psutil.Process(parent_pid)
     except Exception as x:
-        debug_send("exception occured while getting process by pid: " + str(x))
+        print_exception(x, "getting process by pid")
         return
     
     child_pid = p.get_children(recursive=True)
