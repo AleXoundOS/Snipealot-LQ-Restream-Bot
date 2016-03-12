@@ -45,7 +45,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.7"
+VERSION = "2.2.8"
 ACTIVE_BOTS = 4
 
 
@@ -797,16 +797,16 @@ def stream_supervisor():
                 ####################
                 if len(choice_dicts) == 0:
                     random_onstream_player = random.choice(list(onstream_set))
-                    conn.msg("stream was idle for more than %d seconds, picking random onstream streamer %s" % \
-                     (AUTOSWITCH_START_DELAY, random_onstream_player))
+                    debug_send( "stream was idle for more than %d seconds, picking random onstream streamer %s" % \
+                                (AUTOSWITCH_START_DELAY, random_onstream_player), tochat=True )
                     on_setplayer(random_onstream_player)
                 elif len(choice_dicts) == 1:
-                    conn.msg("stream was idle for more than %d seconds, switching to %s" % \
-                     (AUTOSWITCH_START_DELAY, choice_dicts[0]["nickname"]))
+                    debug_send( "stream was idle for more than %d seconds, switching to %s" % \
+                                (AUTOSWITCH_START_DELAY, choice_dicts[0]["nickname"]), tochat=True )
                     on_setplayer([choice_dicts[0]["nickname"]])
                 else:
-                    conn.msg( "stream was idle for more than %d seconds, autoswitch started, "
-                              "select from the following players:\n" % AUTOSWITCH_START_DELAY )
+                    debug_send( "stream was idle for more than %d seconds, autoswitch started, "
+                                "select from the following players:\n" % AUTOSWITCH_START_DELAY, tochat=True )
                     afreeca_api.print_online_list(choice_dicts, message="")
                     voted_player = voting(frozenset(bj["nickname"] for bj in choice_dicts))
                     if voted_player == -1:
@@ -814,8 +814,8 @@ def stream_supervisor():
                     elif voted_player != None:
                         on_setplayer([voted_player])
                     else:
-                        conn.msg( "no votes received, randomly picking one of the two BJs " +
-                                  "with highest viewers count and afreeca rank available online" )
+                        debug_send( "no votes received, randomly picking one of the two BJs " +
+                                    "with highest viewers count and afreeca rank available online", tochat=True )
                         on_setplayer([random.choice([bj["nickname"] for bj in choice_dicts][:2])])
     
     autoswitch.waitcounter = AUTOSWITCH_START_DELAY
@@ -826,7 +826,8 @@ def stream_supervisor():
         if twitch_stream_online_supervisor.counter <= 0:
             twitch_stream_online_supervisor.counter = TWITCH_POLL_INTERVAL
             if not twitch_stream_online():
-                conn.msg("wtf, twitch reports \"offline\" status for the stream, ooh... restarting stream")
+                debug_send( "wtf, twitch reports \"offline\" status for the stream, ooh... restarting stream"
+                          , tochat=True )
                 on_restartstream([])
                 return False
             else:
@@ -844,7 +845,7 @@ def stream_supervisor():
                 dummy_videos = [ f for f in os.listdir(DUMMY_VIDEOS_PATH) \
                                  if f[-4:] == ".flv" and os.path.isfile(DUMMY_VIDEOS_PATH+"/"+f) ]
             if len(dummy_videos) == 0:
-                conn.msg("fatal error, no dummy videos found, sleeping for 8 minutes")
+                debug_send("fatal error, no dummy videos found, sleeping for 8 minutes", tochat=True)
                 time.sleep(60*8)
                 toggles["dummy_video_loop__on"] = False
                 return
@@ -861,10 +862,10 @@ def stream_supervisor():
             
             try:
                 if not stat.S_ISFIFO(os.stat(_stream_pipe).st_mode):
-                    conn.msg("error, stream pipe file is invalid")
+                    debug_send("error, stream pipe file is invalid", tochat=True)
                     return
             except Exception as x:
-                conn.msg("error, stream pipe file is invalid: " + str(x))
+                debug_send("error, stream pipe file is invalid: " + str(x), tochat=True)
                 toggles["dummy_video_loop__on"] = False
                 return
             
@@ -1035,12 +1036,12 @@ def stream_supervisor():
     for videofile_relpath in ["dummy_videos/"+videofile for videofile in dummy_videos]:
         try:
             if not os.path.isfile(videofile_relpath):
-                conn.msg( "fatal problem, dummy video file \"%s\" does not exist, exiting stream supervisor" \
-                          % videofile_relpath )
+                debug_send( "fatal problem, dummy video file \"%s\" does not exist, exiting stream supervisor" \
+                          % videofile_relpath, tochat=True )
                 return
         except Exception as x:
             print_exception(x, "looking for dummy videos", tochat=True)
-            conn.msg("exiting stream supervisor")
+            debug_send("exiting stream supervisor", tochat=True)
             return
     
     p_dds = {"dd_to_buffer": None, "dd_to_pipe": None}
@@ -1072,7 +1073,7 @@ def stream_supervisor():
         #print("-------------------------------- stream supervisor ping")
         if not pid_alive(mpids["ffmpeg"]):
             if toggles["streaming__enabled"]:
-                conn.msg("supervisor starts streaming to twitch...")
+                debug_send("supervisor starts streaming to twitch...", tochat=True)
                 on_startstream([])
                 time.sleep(4)
                 on_refresh(["--quiet"])
@@ -1154,7 +1155,7 @@ def on_startstream(args):
     
     
     def ffmpeg():
-        conn.msg("launching ffmpeg...")
+        debug_send("launching ffmpeg...", tochat=True)
         #signal.signal(signal.SIGCHLD, signal.SIG_IGN) # avoiding zombies, check if livestreamer can work with it
         #signal.signal(signal.SIGPIPE, signal.SIG_IGN) # avoiding termination at closed pipe
         
@@ -1188,17 +1189,17 @@ def on_startstream(args):
         try:
             os.mkfifo(_stream_pipe)
         except:
-            conn.msg("error, could not create a pipe for streaming processes")
+            debug_send("error, could not create a pipe for streaming processes", tochat=True)
             return
         else:
             debug_send("created a new pipe, filename: " + _stream_pipe)
     elif not stat.S_ISFIFO(os.stat(_stream_pipe).st_mode):
-        conn.msg("file \"%s\" is not a pipe, aborting" % _stream_pipe)
+        debug_send("file \"%s\" is not a pipe, aborting" % _stream_pipe, tochat=True)
         try:
             os.remove(_stream_pipe)
             os.mkfifo(_stream_pipe)
         except:
-            conn.msg("error, could not create a pipe for streaming processes")
+            debug_send("error, could not create a pipe for streaming processes", tochat=True)
             return
         else:
             debug_send("created a new pipe, filename: " + _stream_pipe)
@@ -1206,7 +1207,7 @@ def on_startstream(args):
     
     # starting ffmpeg streaming mprocess
     if pid_alive(mpids["ffmpeg"]): # and twitch status is not online
-        conn.msg("stream is already running")
+        debug_send("stream is already running", tochat=True)
     else:
         ffmpeg__mprocess = Process(target=ffmpeg)
         ffmpeg__mprocess.start()
@@ -1220,7 +1221,7 @@ def on_stopstream(args):
     
     toggles["streaming__enabled"] = False
     if pid_alive(mpids["livestreamer"]) and on_stopplayer([]) == -1:
-        conn.msg("warning, couldn't stop livestreamer")
+        debug_send("warning, couldn't stop livestreamer", tochat=True)
     
     if pid_alive(mpids["ffmpeg"]) or pid_alive(pids["ffmpeg"]):
         if pid_alive(pids["ffmpeg"]):
@@ -1231,7 +1232,7 @@ def on_stopstream(args):
                 else:
                     return -1
     else:
-        conn.msg("streaming process is not running")
+        debug_send("streaming process is not running", tochat=True)
         return -2
 
 
@@ -1273,10 +1274,10 @@ def startplayer(afreeca_id, player):
                         conn.msg("there is no acceptable stream! (no RTMP, no HLS)")
                         return
                 else:
-                    conn.msg("there is no acceptable stream! (no best)")
+                    conn.msg("there is no acceptable stream! (no \"best\")")
                     return -1
             else:
-                conn.msg("%s does not have any stream online" % player)
+                debug_send("%s does not have any stream online" % afreeca_id, tochat=True)
                 return -1
         
         livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS) # adding options from settings file
@@ -1296,7 +1297,7 @@ def startplayer(afreeca_id, player):
                            "-loglevel warning " \
                            "-f mpegts -"
         else:
-            conn.msg("unknown stream carrier in bjStreamCarriers!")
+            debug_send("unknown stream carrier in bjStreamCarriers!", tochat=True)
             return
         
         pv__cmd = "pv - --wait -f -i %s -r 2>&1 1>%s" % (str(PV_PIPE_INTERVAL), _stream_pipel)
@@ -1320,7 +1321,7 @@ def startplayer(afreeca_id, player):
                     debug_send("error, stream pipe file is invalid (pipel), maybe try !restartbot", tochat=True)
                     return
             except Exception as x:
-                conn.msg(str(x))
+                print_exception(x, "stas.S_ISFIFO failed inside livestreamer mprocess")
                 return
             
             l_ffmpeg_log_file = open("l_ffmpeg_log%d" % _stream_id, 'a')
@@ -1403,7 +1404,7 @@ def startplayer(afreeca_id, player):
         return True
     
     if not pid_alive(pids["ffmpeg"]):
-        conn.msg("error, streaming to twitch is not running")
+        debug_send("error, streaming to twitch is not running", tochat=True)
         return True
     
     toggles["voting__on"] = False
@@ -1462,17 +1463,17 @@ def maintain_pipe(pipe_name):
         try:
             os.mkfifo(pipe_name)
         except Exception as x:
-            conn.msg("error, could not mkfifo %s for streaming processes: %s" % (pipe_name, str(x)))
+            debug_send("error, could not mkfifo %s for streaming processes: %s" % (pipe_name, str(x)), tochat=True)
             return -1
         else:
             debug_send("created a new pipe, filename: " + pipe_name)
     elif not stat.S_ISFIFO(os.stat(pipe_name).st_mode):
-        conn.msg("file \"%s\" is not a pipe, replacing" % pipe_name)
+        debug_send("file \"%s\" is not a pipe, replacing" % pipe_name, tochat=True)
         try:
             os.remove(pipe_name)
             os.mkfifo(pipe_name)
         except Exception as x:
-            conn.msg("error, could not mkfifo %s for streaming processes: %s" % (pipe_name, str(x)))
+            debug_send("error, could not mkfifo %s for streaming processes: %s" % (pipe_name, str(x)), tochat=True)
             return -1
         else:
             debug_send("created a new pipe, filename: " + pipe_name)
@@ -1645,7 +1646,8 @@ def on_refresh(args):
     elif status["prev_player"] is not None and status["prev_afreeca_id"] is not None:
         on_setmanual([status["prev_afreeca_id"], status["prev_player"]])
     elif "--quiet" not in args:
-        conn.msg("error, no player is assigned to this channel and no previous players in history either")
+        debug_send( "error, no player is assigned to this channel and no previous players in history either"
+                  , tochat=True )
 
 
 def on_tldef(args):
@@ -1675,8 +1677,8 @@ def on_tldef(args):
                         conn.msg("successfully updated player nickname & race at teamliquid.net")
                     break
                 elif counter == 0:
-                    conn.msg( "warning, couldn't update player nickname & race at teamliquid.net, "
-                              "got %d response" % r.status_code )
+                    debug_send( "warning, couldn't update player nickname & race at teamliquid.net, "
+                                "got %d response" % r.status_code, tochat=True )
             except Exception as x:
                 print_exception(x, "updating player nickname & race at teamliquid.net")
         
@@ -1695,8 +1697,8 @@ def on_tldef(args):
                     conn.msg("successfully updated player nickname & race at defiler.ru")
                 break
             elif counter == 0:
-                conn.msg( "warning, couldn't update streamer nickname & race at defiler.ru, "
-                          "got %d response" % r.status_code )
+                debug_send( "warning, couldn't update streamer nickname & race at defiler.ru, "
+                            "got %d response" % r.status_code, tochat=True )
     
     if len(args) == 0:
         player = status["player"]
@@ -1741,7 +1743,7 @@ def twitch_stream_online():
         
         r = requests.get(url)
     except Exception as x:
-        conn.msg("warning, improper response from twitch about online status: " + str(x))
+        debug_send("warning, improper response from twitch about online status: " + str(x), tochat=True)
         return -1
     
     return True if r.status_code == 200 else False
@@ -1868,7 +1870,8 @@ def on_title(args):
                     conn.msg("successfully updated twitch stream title")
                 break
             elif counter == 0:
-                conn.msg("warning, couldn't update stream title, got %d response from twitch" % r.status_code)
+                debug_send( "warning, couldn't update stream title, got %d response from twitch" % r.status_code
+                          , tochat=True )
     
     start_multiprocess(proceed_on_title)
 
@@ -1944,14 +1947,14 @@ def on_killprocess(args):
         except Exception as x:
             debug_send(str(x))
     else:
-        conn.msg("error, such process doesn't exist or not alive")
+        debug_send("error, such process (%s) doesn't exist or not alive", process)
 
 
 def on_restartbot(args):
     if len(args) != 0:
         return False
     
-    conn.msg("going offline...")
+    debug_send("going offline...", tochat=True)
     time.sleep(0.2)
     #conn.connection.quit()
     exit()
@@ -1967,7 +1970,7 @@ def on_switch_irc(args):
     conn.connection.quit()
 
 def on_irc(args):
-    conn.msg("connected to %s IRC server" % conn.connection.server)
+    debug_send("connected to %s IRC server" % conn.connection.server, tochat=True)
 
 
 def dump_status():
@@ -1980,7 +1983,7 @@ def dump_status():
                        #, "votes": dict(votes)
                        }, hF, indent=4, separators=(',', ': '), sort_keys=True )
     except Exception as x:
-        conn.msg("error, could not save status file: %s" % str(x))
+        debug_send("error, could not save status file: %s" % str(x), tochat=True)
 
 def get_statuses():
     statuses = [None] * (ACTIVE_BOTS+1)
@@ -2010,7 +2013,7 @@ def on_reloadsettings(args):
         help_for_commands = load_help_for_commands("help_for_commands.json")
         forbidden_players = load_forbidden_players("forbidden_players.json")
     except Exception as x:
-        debug_send("failed to reload configs " + str(x))
+        debug_send("failed to reload configs: " + str(x), tochat=True)
         time.sleep(7)
         return
         # idea: combine msg+debug using ": ", but print second part only when debugging is enabled
@@ -2024,12 +2027,12 @@ def on_reloadsettings(args):
         
     except Exception as x:
         if conn is not None:
-            conn.msg("fatal error, couldn't reload available votes list, vote system may not work")
+            debug_send("fatal error, couldn't reload available votes list, vote system may not work", tochat=True)
             debug_send(str(x))
             return
     
     if conn is not None:
-        conn.msg("reloaded settings")
+        debug_send("reloaded settings", tochat=True)
 
 
 
