@@ -20,7 +20,7 @@ import os
 import json
 import logging
 import re
-from multiprocessing import Process, Manager, active_children, Lock
+from multiprocessing import Process, Manager, active_children, Lock, Queue
 from subprocess import Popen, PIPE, DEVNULL
 import time
 from datetime import datetime
@@ -80,13 +80,13 @@ DEBUG = [] # "chat,stdout,logfile"
 TEST = False
 
 manager = Manager()
-pids = {}
-mpids = {}
-toggles = {}
-status = {}
+pids = None
+mpids = None
+toggles = None
+status = None
 onstream_responses = manager.dict({})
-votes = {}
-voted_users = []
+votes = None
+voted_users = None
 dummy_videos = manager.list([])
 commercial_lastruntime = manager.list([datetime.now()])
 
@@ -321,7 +321,7 @@ def close_pid_p_gradually(process_name):
             if not p.is_running():
                 return True
             elif p.status() == psutil.STATUS_ZOMBIE:
-                debug_send("%s: warning process \"%s\" is zombie" % (stack()[1][3], process_name), tochat=True)
+                debug_send("%s: warning process \"%s\" is zombie" % (stack()[1][3], process_name))
                 return True
             
             debug_send( "%s: warning, process is still alive after using %s method at [%s] process"
@@ -679,15 +679,15 @@ def voting(vote_set=None):
         elif len(online_set) < 2:
             conn.msg("less than 2 streamers available for voting, aborting")
             return -1
-        vote_set = online_set - forbidden_players
+        else:
+            vote_set = online_set - forbidden_players
     
     vote_set = frozenset([p.lower() for p in vote_set])
     
     
-    
-    def clear_votes():
-        for player in votes.keys():
-            votes[player] = 0
+    # clearing votes key/value dict
+    for player in votes.keys():
+        votes[player] = 0
     
     voted_users[:] = []
     
@@ -698,9 +698,9 @@ def voting(vote_set=None):
     time.sleep(report_interval)
     while counter >= 0 and toggles["voting__on"]:
         counter -= report_interval
-        conn.msg("voting in progress, %d seconds remaining, (%s)" % \
-         (counter, ', '.join(["%s: %d" % (k2,v2) for k2,v2 in votes.items() \
-         if (vote_set is None or k2 in vote_set) and v2 > 0])))
+        conn.msg( "voting in progress, %d seconds remaining, (%s)" % \
+                  ( counter, ', '.join( [ "%s: %d" % (k2,v2) for k2,v2 in votes.items() \
+                                          if (vote_set is None or k2 in vote_set) and v2 > 0 ] ) ) )
         if counter >= report_interval:
             time.sleep(report_interval)
         else:
@@ -726,15 +726,12 @@ def voting(vote_set=None):
         conn.msg("voting ended; "+', '.join(["%s: %d" % (k2,v2) for k2,v2 in these_votes.items() if v2 > 0]))
         winners = [k for k, v in these_votes.items() if v == max_votes]
         if len(winners) == 1:
-            clear_votes()
             return winners[0]
         else:
             conn.msg("there are several winners, selecting random winner")
-            clear_votes()
             return random.choice(winners)
     else:
         conn.msg("voting ended")
-        clear_votes()
         return None
 
 
@@ -757,10 +754,17 @@ def stream_supervisor():
                     statuses.append(iter1_status)
             onstream_set = frozenset([iter2_status["status"]["player"] for iter2_status in statuses])
             
+            ## encapsulating online_fetch function into multiprocessing queue
+            q = Queue()
+            def queueFetchedPlayers(q):
+                q.put(online_fetch(afreeca_database, quiet=True, tune_oom=True))
+            
+            p = Process(target=queueFetchedPlayers, args=(q,))
+            p.start()
+            p.join()
+            
             # getting online_set
-            os.nice(20) # tuning priority down
-            online_BJs = online_fetch(afreeca_database, quiet=True)
-            os.nice(0) # tuning priority back
+            online_BJs = q.get()
             
             if online_BJs == -1 or len(online_BJs) == 0:
                 # means that couldn't fetch the online list
@@ -2003,6 +2007,8 @@ def on_reloadsettings(args):
         conn.msg("error, this command doesn't accept any arguments")
         return False
     
+    # may not work if launched not from main
+    
     load_settings("settings.json")
     
     global afreeca_database, modlist, all_commands, help_for_commands, forbidden_players
@@ -2020,11 +2026,8 @@ def on_reloadsettings(args):
     
     global votes
     try:
-        votes = manager.dict(
-                dict.fromkeys([
-                iter_dict[NICKNAME_].lower() for iter_dict in afreeca_database.values()
-                if iter_dict[NICKNAME_] not in forbidden_players], 0))
-        
+        votes = manager.dict(dict.fromkeys([ iter_dict[NICKNAME_].lower() for iter_dict in afreeca_database.values()
+                                             if iter_dict[NICKNAME_] not in forbidden_players ], 0))
     except Exception as x:
         if conn is not None:
             debug_send("fatal error, couldn't reload available votes list, vote system may not work", tochat=True)
