@@ -121,7 +121,7 @@ def get_online_BJs(afreeca_database, verbose=False, quiet=False, tune_oom=False,
         j1 = j1 + 2
     
     mixedSort = sorted(mixedSort, key=lambda s: int(s["value"]))
-    print_dbg(str(mixedSort) + "\n")
+    #print_dbg(str(mixedSort) + "\n")
     
     combRank_online_BJs = []
     for place in mixedSort:

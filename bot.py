@@ -35,17 +35,14 @@ from inspect import stack
 from irc.client import SimpleIRCClient
 import irc
 
-from livestreamer.api import streams
-from livestreamer.exceptions import (LivestreamerError, PluginError, NoStreamsError, NoPluginError, StreamError)
-from livestreamer.stream import RTMPStream, HLSStream
-from livestreamer.session import Livestreamer
+from modules import livestreamer_helper
 
 from modules import afreeca_api
 from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.8"
+VERSION = "2.2.11"
 ACTIVE_BOTS = 4
 
 
@@ -73,7 +70,6 @@ LIVESTREAMER_OPTIONS = None
 FFMPEG_OPTIONS = None
 RETRY_COUNT = None
 AUTOSWITCH_START_DELAY = None
-PV_DEVNULL_INTERVAL = 3
 PV_PIPE_INTERVAL = 7
 VOTE_TIMER = None
 DEBUG = [] # "chat,stdout,logfile"
@@ -96,7 +92,6 @@ _stream_pipel = None
 _stream_rate_file = None
 _stream_buffer_file = None
 
-LivestreamerObject = None
 conn = None
 
 all_commands = None
@@ -115,7 +110,7 @@ lock_reconnect = Lock()
 def load_settings(filename):
     global STREAM, TWITCH_IRC_SERVER, RTMP_SERVER, LIVESTREAMER_OPTIONS, FFMPEG_OPTIONS, RETRY_COUNT, TEST
     global AUTOSWITCH_START_DELAY, VOTE_TIMER, DEBUG, FALLBACK_IRC_SERVER, TL_API, DEFILER_API
-    global PV_DEVNULL_INTERVAL, PV_PIPE_INTERVAL, MIN_INPUT_RATE
+    global PV_PIPE_INTERVAL, MIN_INPUT_RATE
     
     with open(filename, 'r') as hF:
         settings = json.load(hF)
@@ -128,7 +123,6 @@ def load_settings(filename):
     RETRY_COUNT = settings["RETRY_COUNT"]
     AUTOSWITCH_START_DELAY = settings["AUTOSWITCH_START_DELAY"]
     VOTE_TIMER = settings["VOTE_TIMER"]
-    PV_DEVNULL_INTERVAL = settings["PV_DEVNULL_INTERVAL"]
     PV_PIPE_INTERVAL = settings["PV_PIPE_INTERVAL"]
     TL_API = settings["TL_API"]
     DEFILER_API = settings["DEFILER_API"]
@@ -309,7 +303,7 @@ def close_pid_p_gradually(process_name):
     
     try:
         p = psutil.Process(pids[process_name])
-        for method in {p.terminate, p.kill}:
+        for method in [p.terminate, p.kill]: ## using [] instead of {} preserves order
             if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
                 method()
 
@@ -417,6 +411,9 @@ class IRCClass(SimpleIRCClient):
     
     def on_disconnect(self, connection, event):
         debug_send("\ndisconnected from %s\n" % connection.server)
+        time.sleep(10)
+        debug_send("conn.connection.quit()")
+        conn.connection.quit()
     
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
@@ -609,9 +606,13 @@ def on_onstream(request_channel):
         else:
             onstream_value = "switching to " + status["player"]
     
-    # (ommiting '#' character from channel string, when composing twitch link)
-    conn.connection.privmsg( request_channel
-                           , "twitch.tv/%-10s   %s" % (STREAM[_stream_id]["channel"][1:], onstream_value) )
+    try:
+        # (ommiting '#' character from channel string, when composing twitch link)
+        conn.connection.privmsg( request_channel
+                               , "twitch.tv/%-10s   %s" % (STREAM[_stream_id]["channel"][1:], onstream_value) )
+    except Exception as x:
+        print_exception(x, "sending !onstream responce")
+        return False
 
 
 def on_help(args):
@@ -874,19 +875,12 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
-            dummy_video_loop__cmd = "ffmpeg -y -flags +global_header -fflags +nobuffer " \
+            dummy_video_loop__cmd = "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
                                     "-re -i " + dummy_videofile + " " \
-                                    "-c:v copy -c:a libmp3lame -ar 44100 -loglevel error " \
+                                    "-c:v copy -c:a libmp3lame -ar 44100 " \
                                     "-bsf:v h264_mp4toannexb " \
                                     "-f mpegts " + _stream_pipe
             
-            #dummy_video_loop__cmd = "ffmpeg -y " \
-                                    #"-re -i \"" + dummy_videofile + "\" " \
-                                    #"-c copy -loglevel error " \
-                                    #"-bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
-            #dummy_video_loop__cmd = "ffmpeg -y -re -flags +global_header -fflags +genpts+igndts+nobuffer -i \"" + dummy_videofile + "\" " \
-                                    #"-vsync 0 -c:v copy -c:a libmp3lame -ar 44100 " \
-                                    #"-loglevel error -bsf:v h264_mp4toannexb -f mpegts " + _stream_pipe
             debug_send(dummy_video_loop__cmd)
             dummy_video_loop__process = Popen(dummy_video_loop__cmd.split(), shell=False)
             pids["dummy_video_loop"] = dummy_video_loop__process.pid
@@ -1144,7 +1138,10 @@ def on_startstream(args):
     # first argument -- stream_id
     if len(args) == 1:
         if args[0][0].isdigit() and int(args[0][0]) in range(1, 1+ACTIVE_BOTS):
-            conn.connection.privmsg(STREAM[int(args[0][1])]["channel"], "!startstream")
+            try:
+                conn.connection.privmsg(STREAM[int(args[0][1])]["channel"], "!startstream")
+            except Exception as x:
+                print_exception(x, "sending command to another channel")
             return True
         else:
             conn.msg("error, invalid stream id")
@@ -1171,7 +1168,10 @@ def on_startstream(args):
             return
         
         # starting ffmpeg to stream from pipe
-        ffmpeg__cmd = "ffmpeg -re -i " + _stream_pipe + " -vsync 0 -c:v copy " \
+        #ffmpeg__cmd = "ffmpeg -hide_banner -flags +global_header -fflags +nobuffer -vsync drop -copytb 1 " \
+        ffmpeg__cmd = "ffmpeg -hide_banner -re -i " + _stream_pipe + " -vsync 0 " \
+                      "-re -i " + _stream_pipe + " " \
+                      "-c:v copy " \
                       "-c:a libfdk_aac -cutoff 18000 -b:a 128k " \
                       "-f flv " + RTMP_SERVER + "/" + STREAM[_stream_id]["stream_key"]
         #ffmpeg__cmd += ffmpeg_options
@@ -1254,54 +1254,74 @@ def on_restartstream(args):
     on_refresh(["--quiet"])
 
 
-def startplayer(afreeca_id, player):
+def pickStream(afreeca_id, carrierPreference):
+    #LivestreamerObject = Livestreamer() # doing this every time a new BJ is requested saves memory (a lot!)
+    lStreamsForBJ = livestreamer_helper.LivestreamerObject.streams("afreeca.com/" + afreeca_id)
+    if not lStreamsForBJ:
+        #debug_send("livestreamer returned no streams for %s" (afreeca_id))
+        debug_send("no streams found for %s" % (player), tochat=True)
+        return None
+    #print("lStreamsForBJ: " + str(lStreamsForBJ))
+    
+    streamsForBJ = livestreamer_helper.filterSupportedStreams(lStreamsForBJ)
+    if not streamsForBJ:
+        debug_send("there are no supported streams for %s!" % (afreeca_id), tochat=True)
+        return None
+    
+    if carrierPreference not in [None, "best"]:
+        stream = livestreamer_helper.selectStreamByPreference(streamsForBJ, carrierPreference)
+        if stream:
+            debug_send("forcing %s for %s" % (carrierPreference, afreeca_id), tochat=True)
+            return stream
+        debug_send("%s stream carrier is unavailable for %s" % (carrierPreference, afreeca_id), tochat=True)
+    
+    stream = livestreamer_helper.selectStreamBest(streamsForBJ)
+    if stream:
+        return stream
+    debug_send("there is no \"best\" stream for %s" % (afreeca_id))
+    
+    return livestreamer_helper.selectStreamAny(streamsForBJ)
+
+
+def startplayer(afreeca_id, player, carrierPreference=None):
     def livestreamer(afreeca_id):
         #signal.signal(signal.SIGPIPE, signal.SIG_IGN) # avoiding termination at closed pipe
         
-        # checking if BJ has a remembered relation of carrier
-        if afreeca_id not in bjStreamCarriers:
-            # getting info about carrier using Livestreamer Python API
-            global LivestreamerObject
-            LivestreamerObject = Livestreamer() # doing this every time a new BJ is requested saves memory (a lot!)
-            streamsForBJ = LivestreamerObject.streams("afreeca.com/" + afreeca_id)
-            if streamsForBJ:
-                if "best" in streamsForBJ:
-                    if isinstance(streamsForBJ["best"], RTMPStream):
-                        #debug_send("{%s: %s} -> %s" % (afreeca_id, "RTMP", str(bjStreamCarriers)))
-                        conn.msg("remembering %s carrier for %s" % ("RTMP", player))
-                        bjStreamCarriers[afreeca_id] = "RTMP"
-                    elif isinstance(streamsForBJ["best"], HLSStream):
-                        #debug_send("{%s: %s} -> %s" % (afreeca_id, "HLS", str(bjStreamCarriers)))
-                        conn.msg("remembering %s carrier for %s" % ("HLS", player))
-                        bjStreamCarriers[afreeca_id] = "HLS"
-                    else:
-                        conn.msg("there is no acceptable stream! (no RTMP, no HLS)")
-                        return
-                else:
-                    conn.msg("there is no acceptable stream! (no \"best\")")
-                    return -1
+        ## checking if BJ has a remembered relation of carrier and carrierPreference matches
+        if  afreeca_id in bjStreamCarriers \
+        and (carrierPreference == None or carrierPreference == bjStreamCarriers[afreeca_id]["carrier"]):
+            ## use remembered
+            if carrierPreference != None:
+                debug_send("forcing %s for %s" % (carrierPreference, afreeca_id), tochat=True)
+        ## if stream couldn't be found in remembered bjStreamCarriers or carrierPreference does not match
+        else:
+            ## try to find a stream matching the carrierPreference
+            stream = pickStream(afreeca_id, carrierPreference)
+            if stream:
+                debug_send("remembering %s carrier for %s" % (stream["carrier"], player), tochat=True)
+                bjStreamCarriers[afreeca_id] = stream
             else:
-                debug_send("%s does not have any stream online" % afreeca_id, tochat=True)
-                return -1
+                #debug_send("no streams found for %s" % (player), tochat=True)
+                return
         
         livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS) # adding options from settings file
-        livestreamer__cmd += " afreeca.com/%s best -O" % (afreeca_id)
+        livestreamer__cmd += " afreeca.com/%s %s -O" % (afreeca_id, bjStreamCarriers[afreeca_id]["lName"])
         
-        if bjStreamCarriers[afreeca_id] == "RTMP": # if BJ has RTMP stream carrier (read from key/value dictionary)
-            ffmpeg__cmd =  "ffmpeg -y -flags +global_header -fflags +genpts+igndts+nobuffer -re -i - " \
+        if bjStreamCarriers[afreeca_id]["carrier"] == "RTMP": # if BJ has RTMP stream carrier (read from key/value dictionary)
+            ffmpeg__cmd =  "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
+                           "-re -i - " \
                            "-c:v copy -c:a libmp3lame -ar 44100 " \
-                           "-copyts -bsf:v h264_mp4toannexb " \
-                           "-loglevel warning " \
+                           "-bsf:v h264_mp4toannexb " \
                            "-f mpegts -"
-        elif bjStreamCarriers[afreeca_id] == "HLS": # if BJ has HLS stream carrier (read from key/value dictionary)
+        elif bjStreamCarriers[afreeca_id]["carrier"] == "HLS": # if BJ has HLS stream carrier (read from key/value dictionary)
             # pv --rate-limit doesn't work as expected, it computes overall data size over elapsed time
             #ffmpeg__cmd =   "pv --rate-limit %s --wait --average-rate --timer --rate --bytes | " % (HLS_RATE_LIMIT)
-            ffmpeg__cmd =  "ffmpeg -y -re -i - " \
+            ffmpeg__cmd =  "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
+                           "-re -i - " \
                            "-c:v copy -c:a libmp3lame -ar 44100 " \
-                           "-loglevel warning " \
                            "-f mpegts -"
         else:
-            debug_send("unknown stream carrier in bjStreamCarriers!", tochat=True)
+            debug_send("huge problem, unknown stream carrier in bjStreamCarriers!", tochat=True)
             return
         
         pv__cmd = "pv - --wait -f -i %s -r 2>&1 1>%s" % (str(PV_PIPE_INTERVAL), _stream_pipel)
@@ -1413,6 +1433,7 @@ def startplayer(afreeca_id, player):
     
     toggles["voting__on"] = False
     conn.msg("switching to " + player)
+    debug_send("switching to " + player)
     
     #needrestart = False
     #if (afreeca_id == "sogoodtt" and status["afreeca_id"] != afreeca_id):
@@ -1516,7 +1537,7 @@ def dd_to_buffer(p):
                 elif p["dd_to_buffer"].status() in {psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_DISK_SLEEP}:
                     return
                 else:
-                    debug_send("dd_to_buffer: closing existing dd with status = " + p["dd_to_buffer"].status(), tochat=True)
+                    debug_send("dd_to_buffer: closing existing dd with status = " + p["dd_to_buffer"].status())
                     close_pid_p_gradually("dd_to_buffer")
             except Exception as x:
                 debug_send("dd_to_buffer: (about \"dd_to_buffer\"): " + str(x), tochat=True)
@@ -1557,7 +1578,7 @@ def dd_to_pipe(p):
                 elif p["dd_to_pipe"].status() in {psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING, psutil.STATUS_DISK_SLEEP}:
                     return
                 else:
-                    debug_send("dd_to_pipe: closing existing dd with status = " + p["dd_to_pipe"].status(), tochat=True)
+                    debug_send("dd_to_pipe: closing existing dd with status = " + p["dd_to_pipe"].status())
                     close_pid_p_gradually("dd_to_pipe")
             except Exception as x:
                 debug_send("dd_to_pipe: (about \"dd_to_pipe\"): " + str(x), tochat=True)
@@ -1572,19 +1593,30 @@ def dd_to_pipe(p):
 def on_setplayer(args):
     # !setplayer [-n] <player>
     # where n optional stream id
-    if not (1 <= len(args) <= 2):
+    if not (1 <= len(args) <= 3):
         return False
     
     if args[0][0] == '-':
         if args[0][1].isdigit() and int(args[0][1]) in range(1, 1+ACTIVE_BOTS):
-            if len(args) == 2:
-                conn.connection.privmsg(STREAM[int(args[0][1])]["channel"], "!setplayer " + args[1])
+            if len(args) >= 2:
+                try:
+                    conn.connection.privmsg(STREAM[int(args[0][1])]["channel"], "!setplayer " + args[1])
+                except Exception as x:
+                    print_exception(x, "sending command to another channel")
                 return True
             else:
                 return False
         else:
             return False
-        
+    
+    ## choosing stream carrier
+    carrierPreference = None
+    if "--rtmp" in args:
+        carrierPreference = "RTMP"
+    elif "--hls" in args:
+        carrierPreference = "HLS"
+    elif "--best" in args:
+        carrierPreference = "best"
     
     player = args[0].lower()
     afreeca_id = None
@@ -1609,23 +1641,32 @@ def on_setplayer(args):
     if pid_alive(mpids["livestreamer"]):
         if on_stopplayer([]) == -1:
             return
-    startplayer(afreeca_id, player)
+    startplayer(afreeca_id, player, carrierPreference)
 
 
 def on_setmanual(args):
-    if len(args) == 0 or len(args) > 2:
+    if len(args) == 0 or len(args) > 3:
         return False
     if len(args) >= 1:
         afreeca_id = args[0]
-        if len(args) == 1:
+        if len(args) == 1 or len(args) > 1 and "--" == args[1][:2]:
             if afreeca_id in afreeca_database:
                 player = afreeca_database[afreeca_id][NICKNAME_]
             else:
                 conn.msg("error, unknown afreeca ID")
                 return True
     
-    if len(args) == 2:
+    if len(args) >= 2 and "--" != args[1][:2]:
         player = args[1]
+    
+    ## choosing stream carrier
+    carrierPreference = None
+    if "--rtmp" in args:
+        carrierPreference = "RTMP"
+    elif "--hls" in args:
+        carrierPreference = "HLS"
+    elif "--best" in args:
+        carrierPreference = "best"
     
     if not isbjon(afreeca_id, quiet=True):
         conn.msg(player + " is offline")
@@ -1634,21 +1675,39 @@ def on_setmanual(args):
     if pid_alive(mpids["livestreamer"]):
         if on_stopplayer([]) == -1:
             return
-    startplayer(afreeca_id, player)
+    startplayer(afreeca_id, player, carrierPreference)
 
 
 def on_refresh(args):
-    if len(args) > 0 and args[0] != "--quiet":
-        conn.msg("error, this command doesn't accept any arguments")
+    if args and not set(["--quiet", "--hls", "--rtmp", "--best"]).intersection(args):
+        conn.msg("error, this command accepts \"--rtmp\" or \"--hls\" or \"--best\"")
         return
+    
+    ## choosing stream carrier
+    carrierPreference = None
+    if "--rtmp" in args:
+        carrierPreference = "RTMP"
+    elif "--hls" in args:
+        carrierPreference = "HLS"
+    elif "--best" in args:
+        carrierPreference = "best"
+    
+    if carrierPreference == None:
+        carrierPreference = random.choice(["best", "RTMP", "HLS"])
+        debug_send("on_refresh: random carrierPreference = " + carrierPreference)
     
     # resetting antispam timer (does not work since it's not in multiprocess manager)
     #stream_supervisor.antispam.blocktime = datetime.fromtimestamp(0)
     
+    rememberedStatus = status.copy()
     if status["player"] != "[idle]" and status["afreeca_id"] is not None:
-        on_setmanual([status["afreeca_id"], status["player"]])
+        if pid_alive(mpids["livestreamer"]):
+            on_stopplayer([])
+        startplayer(rememberedStatus["afreeca_id"], rememberedStatus["player"], carrierPreference)
     elif status["prev_player"] is not None and status["prev_afreeca_id"] is not None:
-        on_setmanual([status["prev_afreeca_id"], status["prev_player"]])
+        if pid_alive(mpids["livestreamer"]):
+            on_stopplayer([])
+        startplayer(rememberedStatus["prev_afreeca_id"], rememberedStatus["prev_player"], carrierPreference)
     elif "--quiet" not in args:
         debug_send( "error, no player is assigned to this channel and no previous players in history either"
                   , tochat=True )
@@ -1734,8 +1793,11 @@ def on_tldef(args):
     tldef__mprocess.start()
     mpids["tldef"] = tldef__mprocess.pid
     
-    conn.connection.privmsg("#mca64launcher", "title=%s&race=%s" % \
-                            (data["title"], data["race"] if "race" in data.keys() else ""))
+    try:
+        conn.connection.privmsg("#mca64launcher", "title=%s&race=%s" % \
+                                (data["title"], data["race"] if "race" in data.keys() else ""))
+    except Exception as x:
+        print_exception(x, "sending info to mca64launcher")
 
 
 def twitch_stream_online():
@@ -1965,6 +2027,7 @@ def on_restartbot(args):
 
 
 def on_switch_irc(args):
+    debug_send("on_switch_irc")
     #if not (0 <= len(args) <= 1):
         #conn.msg("error, this command accepts only one optional argument - <irc_server_address>")
         #return
@@ -2181,7 +2244,7 @@ def kill_child_processes(parent_pid, sig=15):
         print_exception(x, "getting process by pid")
         return
     
-    child_pid = p.get_children(recursive=True)
+    child_pid = p.children(recursive=True)
     for pid in child_pid:
         os.kill(pid.pid, sig)
 
