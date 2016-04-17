@@ -1,0 +1,2 @@
+python -m tests.test_livestreamer_helper sogoodtt hls
+python -m tests.test_afreeca_api
