@@ -42,7 +42,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.11"
+VERSION = "2.2.12"
 ACTIVE_BOTS = 4
 
 
@@ -404,16 +404,17 @@ class IRCClass(SimpleIRCClient):
                 stream_supervisor__mprocess = Process(target=stream_supervisor, args=())
                 stream_supervisor__mprocess.start()
                 mpids["stream_supervisor"] = stream_supervisor__mprocess.pid
-            if not pid_alive(mpids["chat_connection_track"]):
-                chat_connection_track__mprocess = Process(target=chat_connection_track, args=())
-                chat_connection_track__mprocess.start()
-                mpids["chat_connection_track"] = chat_connection_track__mprocess.pid
+            #if not pid_alive(mpids["chat_connection_track"]):
+                #chat_connection_track__mprocess = Process(target=chat_connection_track, args=())
+                #chat_connection_track__mprocess.start()
+                #mpids["chat_connection_track"] = chat_connection_track__mprocess.pid
     
     def on_disconnect(self, connection, event):
         debug_send("\ndisconnected from %s\n" % connection.server)
-        time.sleep(10)
-        debug_send("conn.connection.quit()")
-        conn.connection.quit()
+        while not self.connection.is_connected():
+            time.sleep(10)
+            debug_send("conn.connection.quit()")
+            conn.connection.quit()
     
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
@@ -446,14 +447,14 @@ class IRCClass(SimpleIRCClient):
                 
                 if event.source.nick.lower() in modlist:
                     if Command in all_commands:
-                        #try:
+                        try:
                             if all_commands[Command](arguments) == False:
                                 self.msg("error, incorrect command arguments")
                                 if Command in help_for_commands:
                                     self.msg(help_for_commands[Command])
-                        #except Exception as x:
-                            #self.msg("internal error occurred while running %s command: %s" % \
-                            #(Command, str(x)))
+                        except Exception as x:
+                            print_exception( x, "running %s command: %s" % (Command, str(x))
+                                           , tochat=True )
                     else:
                         self.msg("error, illegal command")
                 elif Command in user_commands:
@@ -480,13 +481,15 @@ class IRCClass(SimpleIRCClient):
                 self.msg("internal error occurred while processing a vote: " + str(x))
     
     def msg(self, message):
+        print("going to send \"%s\"" % (message))
         def split_and_send_string(string):
             splitLength = 384 - 2
             index = 0
             while True:
+                print("in while True")
                 if (len(string) - index <= splitLength):
                     self.connection.privmsg(self.channel, string[index:])
-                    break;
+                    break
                 
                 # first try to find commas in the current portion of text of length <= splitLength and split by them
                 posOfComma = string[index:index+splitLength].rfind(',')
@@ -504,6 +507,7 @@ class IRCClass(SimpleIRCClient):
                 
                 # search for spaces at the beginning of next string portion and ignore them
                 while string[index] == ' ':
+                    print("in index += 1")
                     index += 1
                 
                 # if no commas neither spaces found
@@ -528,13 +532,14 @@ class IRCClass(SimpleIRCClient):
                     except Exception as x:
                         print_exception(x, "sending privmsg")
                         debug_send(message)
-                        break;
+                        break
                     lines_count -= 1
                     if lines_count > 0:
                         #print("sleeping for 1 second after new line in a message")
                         time.sleep(1)
             else:
                 try:
+                    print("before split_and_send_string")
                     split_and_send_string(message)
                 except Exception as x:
                     print_exception(x, "sending privmsg")
@@ -747,11 +752,11 @@ def stream_supervisor():
             autoswitch.waitcounter -= SUPERVISOR_INTERVAL
         
         if autoswitch.waitcounter <= 0:
-            autoswitch.waitcounter = AUTOSWITCH_START_DELAY
+            autoswitch.waitcounter = AUTOSWITCH_START_DELAY + 60
             # getting onstream_set
             statuses = []
             for iter1_status in get_statuses()[1:]:
-                if iter1_status is not None:
+                if iter1_status is not None and iter1_status != "[idle]":
                     statuses.append(iter1_status)
             onstream_set = frozenset([iter2_status["status"]["player"] for iter2_status in statuses])
             
@@ -875,11 +880,12 @@ def stream_supervisor():
                 return
             
             #dummy_video_loop__cmd = "cat \"" + dummy_videofile + "\" > " + _stream_pipe
-            dummy_video_loop__cmd = "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
-                                    "-re -i " + dummy_videofile + " " \
-                                    "-c:v copy -c:a libmp3lame -ar 44100 " \
-                                    "-bsf:v h264_mp4toannexb " \
-                                    "-f mpegts " + _stream_pipe
+            dummy_video_loop__cmd = "/opt/ffmpeg-git/bin/"
+            dummy_video_loop__cmd += "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
+                                     "-re -i " + dummy_videofile + " " \
+                                     "-c:v copy -c:a libmp3lame -ar 44100 " \
+                                     "-bsf:v h264_mp4toannexb " \
+                                     "-f mpegts " + _stream_pipe
             
             debug_send(dummy_video_loop__cmd)
             dummy_video_loop__process = Popen(dummy_video_loop__cmd.split(), shell=False)
@@ -1157,7 +1163,6 @@ def on_startstream(args):
     
     def ffmpeg():
         debug_send("launching ffmpeg...", tochat=True)
-        #signal.signal(signal.SIGCHLD, signal.SIG_IGN) # avoiding zombies, check if livestreamer can work with it
         #signal.signal(signal.SIGPIPE, signal.SIG_IGN) # avoiding termination at closed pipe
         
         p_pipe = maintain_pipe(_stream_pipe)
@@ -1169,11 +1174,13 @@ def on_startstream(args):
         
         # starting ffmpeg to stream from pipe
         #ffmpeg__cmd = "ffmpeg -hide_banner -flags +global_header -fflags +nobuffer -vsync drop -copytb 1 " \
-        ffmpeg__cmd = "ffmpeg -hide_banner -re -i " + _stream_pipe + " -vsync 0 " \
-                      "-re -i " + _stream_pipe + " " \
-                      "-c:v copy " \
-                      "-c:a libfdk_aac -cutoff 18000 -b:a 128k " \
-                      "-f flv " + RTMP_SERVER + "/" + STREAM[_stream_id]["stream_key"]
+        ffmpeg__cmd = "/opt/ffmpeg-git/bin/"
+        ffmpeg__cmd += "ffmpeg -hide_banner -fflags +nobuffer -vsync 0 " \
+                       "-re -i " + _stream_pipe + " " \
+                       "-c:v copy " \
+                       "-c:a libfdk_aac -cutoff 18000 -b:a 128k " \
+                       "-f flv " + RTMP_SERVER + "/" + STREAM[_stream_id]["stream_key"]
+        
         #ffmpeg__cmd += ffmpeg_options
         #ffmpeg__cmd += [ "-bsf:a", "aac_adtstoasc", "-f", "flv", RTMP_SERVER + '/' + STREAM[_stream_id]["stream_key"]]
         debug_send("\n%s\n" % ffmpeg__cmd)
@@ -1304,11 +1311,14 @@ def startplayer(afreeca_id, player, carrierPreference=None):
                 #debug_send("no streams found for %s" % (player), tochat=True)
                 return
         
+        debug_send("bjStreamCarriers[%s][\"carrier\"] = %s" % (afreeca_id, bjStreamCarriers[afreeca_id]["carrier"]))
+        
         livestreamer__cmd = "livestreamer " + ' '.join(LIVESTREAMER_OPTIONS) # adding options from settings file
         livestreamer__cmd += " afreeca.com/%s %s -O" % (afreeca_id, bjStreamCarriers[afreeca_id]["lName"])
         
         if bjStreamCarriers[afreeca_id]["carrier"] == "RTMP": # if BJ has RTMP stream carrier (read from key/value dictionary)
-            ffmpeg__cmd =  "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
+            ffmpeg__cmd = "/opt/ffmpeg-git/bin/"
+            ffmpeg__cmd += "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
                            "-re -i - " \
                            "-c:v copy -c:a libmp3lame -ar 44100 " \
                            "-bsf:v h264_mp4toannexb " \
@@ -1316,7 +1326,8 @@ def startplayer(afreeca_id, player, carrierPreference=None):
         elif bjStreamCarriers[afreeca_id]["carrier"] == "HLS": # if BJ has HLS stream carrier (read from key/value dictionary)
             # pv --rate-limit doesn't work as expected, it computes overall data size over elapsed time
             #ffmpeg__cmd =   "pv --rate-limit %s --wait --average-rate --timer --rate --bytes | " % (HLS_RATE_LIMIT)
-            ffmpeg__cmd =  "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
+            ffmpeg__cmd = "/opt/ffmpeg-git/bin/"
+            ffmpeg__cmd += "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
                            "-re -i - " \
                            "-c:v copy -c:a libmp3lame -ar 44100 " \
                            "-f mpegts -"
@@ -1867,7 +1878,7 @@ def on_commercial(args):
 
 def commercial(length):
     if not lock_commercial.acquire(block=False):
-        debug_send("lock not acquired")
+        debug_send("lock_commercial couldn't be acquired")
         return
     
     if (datetime.now() - commercial_lastruntime[0]).seconds <= 12*60:
