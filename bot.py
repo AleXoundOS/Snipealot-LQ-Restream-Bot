@@ -42,7 +42,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.12"
+VERSION = "2.2.13"
 ACTIVE_BOTS = 4
 
 
@@ -1266,7 +1266,7 @@ def pickStream(afreeca_id, carrierPreference):
     lStreamsForBJ = livestreamer_helper.LivestreamerObject.streams("afreeca.com/" + afreeca_id)
     if not lStreamsForBJ:
         #debug_send("livestreamer returned no streams for %s" (afreeca_id))
-        debug_send("no streams found for %s" % (player), tochat=True)
+        debug_send("no streams found for %s" % (afreeca_id), tochat=True)
         return None
     #print("lStreamsForBJ: " + str(lStreamsForBJ))
     

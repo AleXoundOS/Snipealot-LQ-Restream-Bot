@@ -6,7 +6,7 @@ from lxml import etree
 from sys import stdin
 import json
 
-url = "http://live.afreeca.com:8057/afreeca/broad_list_api.php"
+url = "http://live.afreecatv.com:8057/afreeca/broad_list_api.php"
 NICKNAME_ = 0
 _connect_timeout = 8
 _read_timeout = 4
