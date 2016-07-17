@@ -42,7 +42,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.14"
+VERSION = "2.2.15"
 ACTIVE_BOTS = 4
 
 
@@ -1087,12 +1087,12 @@ def stream_supervisor():
                 if 0 < datetime.now().timestamp() % 740 <= SUPERVISOR_INTERVAL:
                     conn.msg("stream is off, moderators can use !startstream")
         else:
-            try:
-                # checks twitch stream online status every TWITCH_POLL_INTERVAL seconds
-                if not twitch_stream_online_supervisor():
-                    continue
-            except Exception as x:
-                print_exception(x, "running twitch_stream_online_supervisor", tochat=True)
+            #try:
+                ## checks twitch stream online status every TWITCH_POLL_INTERVAL seconds
+                #if not twitch_stream_online_supervisor():
+                    #continue
+            #except Exception as x:
+                #print_exception(x, "running twitch_stream_online_supervisor", tochat=True)
             
             try:
                 dummy_video_supervisor(p_dds)
