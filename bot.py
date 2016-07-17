@@ -42,7 +42,7 @@ from modules.afreeca_api import isbjon, get_online_BJs
 online_fetch = get_online_BJs
 
 
-VERSION = "2.2.13"
+VERSION = "2.2.14"
 ACTIVE_BOTS = 4
 
 
@@ -53,7 +53,7 @@ MIN_INPUT_RATE = 37*1024 # bytes per second
 TWITCH_KRAKEN_API = "https://api.twitch.tv/kraken"
 TWITCH_V3_HEADER = { "Accept": "application/vnd.twitchtv.v3+json" }
 
-DUMMY_VIDEOS_PATH = "dummy_videos/cabac"
+DUMMY_VIDEOS_PATH = "dummy_videos/2016-07-17"
 
 # some enums for afreeca_database
 NICKNAME_ = 0
@@ -853,7 +853,7 @@ def stream_supervisor():
             
             if len(dummy_videos) == 0:
                 dummy_videos = [ f for f in os.listdir(DUMMY_VIDEOS_PATH) \
-                                 if f[-4:] == ".flv" and os.path.isfile(DUMMY_VIDEOS_PATH+"/"+f) ]
+                                 if f[-3:] == ".ts" and os.path.isfile(DUMMY_VIDEOS_PATH+"/"+f) ]
             if len(dummy_videos) == 0:
                 debug_send("fatal error, no dummy videos found, sleeping for 8 minutes", tochat=True)
                 time.sleep(60*8)
@@ -883,8 +883,8 @@ def stream_supervisor():
             dummy_video_loop__cmd = "/opt/ffmpeg-git/bin/"
             dummy_video_loop__cmd += "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
                                      "-re -i " + dummy_videofile + " " \
-                                     "-c:v copy -c:a libmp3lame -ar 44100 " \
-                                     "-bsf:v h264_mp4toannexb " \
+                                     "-c copy " \
+                                     "-movflags +faststart " \
                                      "-f mpegts " + _stream_pipe
             
             debug_send(dummy_video_loop__cmd)
@@ -1177,8 +1177,9 @@ def on_startstream(args):
         ffmpeg__cmd = "/opt/ffmpeg-git/bin/"
         ffmpeg__cmd += "ffmpeg -hide_banner -fflags +nobuffer -vsync 0 " \
                        "-re -i " + _stream_pipe + " " \
-                       "-c:v copy " \
-                       "-c:a libfdk_aac -cutoff 18000 -b:a 128k " \
+                       "-c copy -bsf:a aac_adtstoasc " \
+                       "-c:a libfdk_aac -cutoff 18000 -b:a 128k -ar 48000 " \
+                       "-movflags +faststart " \
                        "-f flv " + RTMP_SERVER + "/" + STREAM[_stream_id]["stream_key"]
         
         #ffmpeg__cmd += ffmpeg_options
@@ -1320,8 +1321,10 @@ def startplayer(afreeca_id, player, carrierPreference=None):
             ffmpeg__cmd = "/opt/ffmpeg-git/bin/"
             ffmpeg__cmd += "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
                            "-re -i - " \
-                           "-c:v copy -c:a libmp3lame -ar 44100 " \
+                           "-c:v copy " \
+                           "-c:a libfdk_aac -cutoff 18000 -b:a 128k -ar 48000 " \
                            "-bsf:v h264_mp4toannexb " \
+                           "-movflags +faststart " \
                            "-f mpegts -"
         elif bjStreamCarriers[afreeca_id]["carrier"] == "HLS": # if BJ has HLS stream carrier (read from key/value dictionary)
             # pv --rate-limit doesn't work as expected, it computes overall data size over elapsed time
@@ -1329,7 +1332,9 @@ def startplayer(afreeca_id, player, carrierPreference=None):
             ffmpeg__cmd = "/opt/ffmpeg-git/bin/"
             ffmpeg__cmd += "ffmpeg -y -hide_banner -loglevel warning -fflags +nobuffer -vsync passthrough " \
                            "-re -i - " \
-                           "-c:v copy -c:a libmp3lame -ar 44100 " \
+                           "-c:v copy " \
+                           "-c:a libfdk_aac -cutoff 18000 -b:a 128k -ar 48000 " \
+                           "-movflags +faststart " \
                            "-f mpegts -"
         else:
             debug_send("huge problem, unknown stream carrier in bjStreamCarriers!", tochat=True)
